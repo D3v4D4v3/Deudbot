@@ -1,0 +1,6 @@
+node_modules/
+deudas.db
+deudas.db-shm
+deudas.db-wal
+.wwebjs_auth/
+.wwebjs_cache/

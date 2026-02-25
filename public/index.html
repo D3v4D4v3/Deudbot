@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DeudBot - Gestor de Deudas con WhatsApp</title>
+  <meta name="description" content="Chatbot de WhatsApp para gestionar y notificar deudas automáticamente">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+    rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+  <!-- Sidebar -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <div class="logo">
+        <div class="logo-icon">💬</div>
+        <span class="logo-text">DeudBot</span>
+      </div>
+    </div>
+    <nav class="sidebar-nav">
+      <button class="nav-item active" data-section="chat" id="nav-chat">
+        <span class="nav-icon">💬</span>
+        <span class="nav-label">Chat</span>
+      </button>
+      <button class="nav-item" data-section="dashboard" id="nav-dashboard">
+        <span class="nav-icon">📊</span>
+        <span class="nav-label">Dashboard</span>
+      </button>
+      <button class="nav-item" data-section="deudores" id="nav-deudores">
+        <span class="nav-icon">👥</span>
+        <span class="nav-label">Deudores</span>
+      </button>
+      <button class="nav-item" data-section="whatsapp" id="nav-whatsapp">
+        <span class="nav-icon">📱</span>
+        <span class="nav-label">WhatsApp</span>
+        <span class="nav-badge" id="wa-status-badge">●</span>
+      </button>
+      <button class="nav-item" data-section="mensajes" id="nav-mensajes">
+        <span class="nav-icon">✉️</span>
+        <span class="nav-label">Mensajes</span>
+      </button>
+      <button class="nav-item" data-section="configuracion" id="nav-configuracion">
+        <span class="nav-icon">⚙️</span>
+        <span class="nav-label">Ajustes</span>
+      </button>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="wa-mini-status" id="wa-mini-status">
+        <span class="status-dot disconnected"></span>
+        <span>Desconectado</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main Content -->
+  <main class="main-content">
+
+    <!-- ===== CHAT Section (Main) ===== -->
+    <section class="content-section active" id="section-chat">
+      <div class="chat-container">
+        <div class="chat-header-bar">
+          <div class="chat-header-left">
+            <div class="chat-avatar">💬</div>
+            <div>
+              <h1 class="chat-title">DeudBot Chat</h1>
+              <p class="chat-subtitle">Escribe comandos para gestionar deudas</p>
+            </div>
+          </div>
+          <div class="chat-header-right">
+            <div class="wa-indicator" id="chat-wa-indicator">
+              <span class="status-dot disconnected" id="chat-wa-dot"></span>
+              <span id="chat-wa-label">WhatsApp</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="chat-messages" id="chat-messages">
+          <!-- Welcome message -->
+          <div class="chat-msg bot">
+            <div class="chat-bubble bot">
+              <div class="chat-bubble-content">
+                <p><strong>¡Hola! Soy DeudBot 🤖</strong></p>
+                <p>Escribe comandos para gestionar las deudas de tu salón. Aquí tienes algunos ejemplos:</p>
+                <div class="chat-help-commands">
+                  <div class="help-cmd"><code>mau - 40</code> → Poner la deuda de Mau en $40</div>
+                  <div class="help-cmd"><code>mau +15</code> → Sumar $15 a la deuda de Mau</div>
+                  <div class="help-cmd"><code>mau pago 20</code> → Registrar pago de $20 de Mau</div>
+                  <div class="help-cmd"><code>nuevo Juan 5512345678</code> → Registrar nuevo deudor</div>
+                  <div class="help-cmd"><code>lista</code> → Ver todos los deudores</div>
+                  <div class="help-cmd"><code>notificar todos</code> → Enviar recordatorio a todos</div>
+                  <div class="help-cmd"><code>ayuda</code> → Ver todos los comandos</div>
+                </div>
+              </div>
+              <div class="chat-time">Ahora</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="chat-input-container">
+          <form id="chat-form" onsubmit="handleChatSubmit(event)">
+            <div class="chat-input-wrapper">
+              <input type="text" id="chat-input" class="chat-input" placeholder="Escribe un comando... ej: mau - 40"
+                autocomplete="off" autofocus>
+              <button type="submit" class="chat-send-btn" id="chat-send-btn">
+                <span>➤</span>
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== Dashboard Section ===== -->
+    <section class="content-section" id="section-dashboard">
+      <div class="section-header">
+        <h1>Dashboard</h1>
+        <p class="section-subtitle">Resumen general de deudas</p>
+      </div>
+      <div class="stats-grid">
+        <div class="stat-card" id="stat-total-deudores">
+          <div class="stat-icon" style="background: linear-gradient(135deg, #667eea, #764ba2);">👥</div>
+          <div class="stat-info">
+            <span class="stat-value" id="val-total-deudores">0</span>
+            <span class="stat-label">Deudores</span>
+          </div>
+        </div>
+        <div class="stat-card" id="stat-total-deuda">
+          <div class="stat-icon" style="background: linear-gradient(135deg, #f093fb, #f5576c);">💰</div>
+          <div class="stat-info">
+            <span class="stat-value" id="val-total-deuda">$0</span>
+            <span class="stat-label">Deuda Total</span>
+          </div>
+        </div>
+        <div class="stat-card" id="stat-con-deuda">
+          <div class="stat-icon" style="background: linear-gradient(135deg, #fa709a, #fee140);">⚠️</div>
+          <div class="stat-info">
+            <span class="stat-value" id="val-con-deuda">0</span>
+            <span class="stat-label">Con Deuda</span>
+          </div>
+        </div>
+        <div class="stat-card" id="stat-mensajes-hoy">
+          <div class="stat-icon" style="background: linear-gradient(135deg, #43e97b, #38f9d7);">📩</div>
+          <div class="stat-info">
+            <span class="stat-value" id="val-mensajes-hoy">0</span>
+            <span class="stat-label">Mensajes Hoy</span>
+          </div>
+        </div>
+      </div>
+      <div class="dashboard-grid">
+        <div class="card" id="card-top-deudores">
+          <div class="card-header">
+            <h2>🔝 Mayores Deudas</h2>
+          </div>
+          <div class="card-body">
+            <div class="top-deudores-list" id="top-deudores-list">
+              <p class="empty-state">No hay deudores registrados</p>
+            </div>
+          </div>
+        </div>
+        <div class="card" id="card-actividad">
+          <div class="card-header">
+            <h2>📋 Actividad Reciente</h2>
+          </div>
+          <div class="card-body">
+            <div class="activity-list" id="activity-list">
+              <p class="empty-state">Sin actividad reciente</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== Deudores Section ===== -->
+    <section class="content-section" id="section-deudores">
+      <div class="section-header">
+        <h1>Deudores</h1>
+        <div class="section-actions">
+          <button class="btn btn-primary" id="btn-add-deudor" onclick="openModal('add')">
+            <span>+ Agregar Deudor</span>
+          </button>
+        </div>
+      </div>
+      <div class="search-bar">
+        <input type="text" id="search-deudores" placeholder="Buscar por nombre o teléfono..." class="search-input">
+      </div>
+      <div class="table-container">
+        <table class="data-table" id="table-deudores">
+          <thead>
+            <tr>
+              <th>Nombre</th>
+              <th>Teléfono</th>
+              <th>Deuda</th>
+              <th>Notas</th>
+              <th>Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="tbody-deudores">
+            <tr>
+              <td colspan="5" class="empty-state">Cargando...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ===== WhatsApp Section ===== -->
+    <section class="content-section" id="section-whatsapp">
+      <div class="section-header">
+        <h1>WhatsApp</h1>
+        <p class="section-subtitle">Conecta tu cuenta de WhatsApp</p>
+      </div>
+      <div class="wa-connect-card" id="wa-connect-card">
+        <div class="wa-status-display" id="wa-status-display">
+          <div class="wa-status-icon disconnected" id="wa-status-icon">📱</div>
+          <h2 id="wa-status-text">Desconectado</h2>
+          <p id="wa-status-desc">Conecta tu WhatsApp para enviar mensajes</p>
+        </div>
+        <div class="wa-qr-container" id="wa-qr-container" style="display:none;">
+          <img id="wa-qr-image" src="" alt="QR Code">
+          <p class="qr-instruction">Escanea este código con WhatsApp</p>
+          <p class="qr-sub">WhatsApp > Menú > Dispositivos vinculados > Vincular dispositivo</p>
+        </div>
+        <div class="wa-actions">
+          <button class="btn btn-success" id="btn-wa-connect" onclick="connectWhatsApp()">Conectar WhatsApp</button>
+          <button class="btn btn-danger" id="btn-wa-disconnect" onclick="disconnectWhatsApp()"
+            style="display:none;">Desconectar</button>
+        </div>
+        <div class="wa-connected-info" id="wa-connected-info" style="display:none;">
+          <div class="connected-badge">
+            <span class="status-dot connected"></span>
+            <span>Conectado como: <strong id="wa-connected-name"></strong></span>
+          </div>
+        </div>
+      </div>
+      <div class="card mt-20" id="card-send-all">
+        <div class="card-header">
+          <h2>📤 Enviar Recordatorios</h2>
+        </div>
+        <div class="card-body">
+          <p>Envía un recordatorio de deuda a todos los deudores con saldo pendiente.</p>
+          <button class="btn btn-primary mt-10" id="btn-send-all" onclick="sendAllReminders()">🚀 Enviar a
+            Todos</button>
+          <div id="send-all-result" class="mt-10"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== Mensajes Section ===== -->
+    <section class="content-section" id="section-mensajes">
+      <div class="section-header">
+        <h1>Historial de Mensajes</h1>
+        <p class="section-subtitle">Registro de mensajes enviados y recibidos</p>
+      </div>
+      <div class="table-container">
+        <table class="data-table" id="table-mensajes">
+          <thead>
+            <tr>
+              <th>Fecha</th>
+              <th>Deudor</th>
+              <th>Tipo</th>
+              <th>Mensaje</th>
+              <th>Estado</th>
+            </tr>
+          </thead>
+          <tbody id="tbody-mensajes">
+            <tr>
+              <td colspan="5" class="empty-state">Cargando...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ===== Configuración Section ===== -->
+    <section class="content-section" id="section-configuracion">
+      <div class="section-header">
+        <h1>Configuración</h1>
+        <p class="section-subtitle">Personaliza los mensajes y recordatorios</p>
+      </div>
+      <div class="config-grid">
+        <div class="card">
+          <div class="card-header">
+            <h2>💬 Plantilla de Recordatorio</h2>
+          </div>
+          <div class="card-body">
+            <p class="help-text">Mensaje que se envía como recordatorio. Variables: <code>{nombre}</code>,
+              <code>${deuda}</code></p>
+            <textarea id="config-msg-recordatorio" class="config-textarea" rows="3"></textarea>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <h2>🤖 Plantilla de Auto-respuesta</h2>
+          </div>
+          <div class="card-body">
+            <p class="help-text">Mensaje que se envía cuando un deudor pregunta. Variables: <code>{nombre}</code>,
+              <code>${deuda}</code></p>
+            <textarea id="config-msg-respuesta" class="config-textarea" rows="3"></textarea>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <h2>⏰ Recordatorios Automáticos</h2>
+          </div>
+          <div class="card-body">
+            <div class="config-row">
+              <label class="toggle-label">
+                <span>Activar recordatorios automáticos</span>
+                <input type="checkbox" id="config-cron-activo" class="toggle-input">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="config-row mt-10">
+              <label>Hora de envío:</label>
+              <input type="time" id="config-cron-horario" class="config-input" value="09:00">
+            </div>
+            <div class="config-row mt-10">
+              <label>Días:</label>
+              <div class="days-selector" id="days-selector">
+                <label class="day-check"><input type="checkbox" value="lunes"> Lun</label>
+                <label class="day-check"><input type="checkbox" value="martes"> Mar</label>
+                <label class="day-check"><input type="checkbox" value="miercoles"> Mié</label>
+                <label class="day-check"><input type="checkbox" value="jueves"> Jue</label>
+                <label class="day-check"><input type="checkbox" value="viernes"> Vie</label>
+                <label class="day-check"><input type="checkbox" value="sabado"> Sáb</label>
+                <label class="day-check"><input type="checkbox" value="domingo"> Dom</label>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="config-save">
+          <button class="btn btn-primary" id="btn-save-config" onclick="saveConfig()">💾 Guardar Configuración</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Modal Deudor -->
+  <div class="modal-overlay" id="modal-overlay" onclick="closeModal(event)">
+    <div class="modal" id="modal" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h2 id="modal-title">Agregar Deudor</h2>
+        <button class="modal-close" onclick="closeModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="deudor-form" onsubmit="saveDeudor(event)">
+          <input type="hidden" id="form-deudor-id">
+          <div class="form-group">
+            <label for="form-nombre">Nombre</label>
+            <input type="text" id="form-nombre" class="form-input" placeholder="Nombre completo" required>
+          </div>
+          <div class="form-group">
+            <label for="form-telefono">Teléfono</label>
+            <input type="tel" id="form-telefono" class="form-input" placeholder="10 dígitos (ej: 5512345678)" required>
+          </div>
+          <div class="form-group">
+            <label for="form-deuda">Deuda ($)</label>
+            <input type="number" id="form-deuda" class="form-input" placeholder="0.00" step="0.01" min="0" required>
+          </div>
+          <div class="form-group">
+            <label for="form-notas">Notas</label>
+            <textarea id="form-notas" class="form-input" rows="2" placeholder="Notas opcionales"></textarea>
+          </div>
+          <div class="form-actions">
+            <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancelar</button>
+            <button type="submit" class="btn btn-primary" id="btn-save-deudor">Guardar</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Pago -->
+  <div class="modal-overlay" id="pago-modal-overlay" onclick="closePagoModal(event)">
+    <div class="modal" id="pago-modal" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h2 id="pago-modal-title">Registrar Pago</h2>
+        <button class="modal-close" onclick="closePagoModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="pago-form" onsubmit="savePago(event)">
+          <input type="hidden" id="pago-deudor-id">
+          <input type="hidden" id="pago-tipo" value="pago">
+          <div class="form-group">
+            <label for="pago-monto">Monto ($)</label>
+            <input type="number" id="pago-monto" class="form-input" placeholder="0.00" step="0.01" min="0.01" required>
+          </div>
+          <div class="form-group">
+            <label for="pago-concepto">Concepto</label>
+            <input type="text" id="pago-concepto" class="form-input" placeholder="Descripción del pago">
+          </div>
+          <div class="form-actions">
+            <button type="button" class="btn btn-secondary" onclick="closePagoModal()">Cancelar</button>
+            <button type="submit" class="btn btn-success" id="btn-save-pago">Registrar Pago</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <script src="app.js"></script>
+</body>
+
+</html>
