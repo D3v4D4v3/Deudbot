@@ -84,15 +84,22 @@
             <div class="chat-bubble bot">
               <div class="chat-bubble-content">
                 <p><strong>¡Hola! Soy DeudBot 🤖</strong></p>
-                <p>Escribe comandos para gestionar las deudas de tu salón. Aquí tienes algunos ejemplos:</p>
+                <p>Escribe comandos para gestionar las deudas de tu salón. <strong>📖 Comandos disponibles:</strong></p>
                 <div class="chat-help-commands">
-                  <div class="help-cmd"><code>mau - 40</code> → Poner la deuda de Mau en $40</div>
-                  <div class="help-cmd"><code>mau +15</code> → Sumar $15 a la deuda de Mau</div>
-                  <div class="help-cmd"><code>mau pago 20</code> → Registrar pago de $20 de Mau</div>
-                  <div class="help-cmd"><code>nuevo Juan 5512345678</code> → Registrar nuevo deudor</div>
-                  <div class="help-cmd"><code>lista</code> → Ver todos los deudores</div>
+                  <div class="help-cmd"><code>nombre + monto</code> → Registrar compras/sumar (ej:
+                    <code>mau + 15</code>)</div>
+                  <div class="help-cmd"><code>nombre - monto</code> → Registrar un pago (ej: <code>mau - 20</code>)
+                  </div>
+                  <div class="help-cmd"><code>nuevo nombre telefono</code> → Agregar deudor (ej:
+                    <code>nuevo Juan 5512345678</code>)</div>
+                  <div class="help-cmd"><code>nuevo nombre telefono monto</code> → Agregar con deuda (ej:
+                    <code>nuevo Juan 5512345678 50</code>)</div>
+                  <div class="help-cmd"><code>borrar nombre</code> → Eliminar un deudor</div>
+                  <div class="help-cmd"><code>lista</code> → Ver todos los deudores y sus deudas</div>
+                  <div class="help-cmd"><code>info nombre</code> → Ver detalle de un deudor</div>
+                  <div class="help-cmd"><code>notificar nombre</code> → Enviar recordatorio a un deudor</div>
                   <div class="help-cmd"><code>notificar todos</code> → Enviar recordatorio a todos</div>
-                  <div class="help-cmd"><code>ayuda</code> → Ver todos los comandos</div>
+                  <div class="help-cmd"><code>total</code> → Ver el total de deuda</div>
                 </div>
               </div>
               <div class="chat-time">Ahora</div>
@@ -288,7 +295,8 @@
           </div>
           <div class="card-body">
             <p class="help-text">Mensaje que se envía como recordatorio. Variables: <code>{nombre}</code>,
-              <code>${deuda}</code></p>
+              <code>${deuda}</code>
+            </p>
             <textarea id="config-msg-recordatorio" class="config-textarea" rows="3"></textarea>
           </div>
         </div>
@@ -298,7 +306,8 @@
           </div>
           <div class="card-body">
             <p class="help-text">Mensaje que se envía cuando un deudor pregunta. Variables: <code>{nombre}</code>,
-              <code>${deuda}</code></p>
+              <code>${deuda}</code>
+            </p>
             <textarea id="config-msg-respuesta" class="config-textarea" rows="3"></textarea>
           </div>
         </div>

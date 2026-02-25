@@ -89,23 +89,21 @@ function initWhatsApp() {
   whatsappClient.on('message', async (msg) => {
     try {
       if (msg.fromMe) return;
-      
+
       const senderNumber = msg.from.replace('@c.us', '');
       const messageBody = msg.body.toLowerCase().trim();
-      
-      const keywords = ['deuda', 'debo', 'cuanto debo', 'cuánto debo', 'saldo', 'mi deuda', 
-                        'cuanto es', 'cuánto es', 'pendiente', 'cobro', 'pagar', 'monto',
-                        'hola', 'info', 'información', 'informacion', 'estado'];
-      
+
+      const keywords = ['deuda', 'debo'];
+
       const isAskingDebt = keywords.some(kw => messageBody.includes(kw));
-      
+
       if (isAskingDebt) {
         const deudor = db.getDeudorByTelefono(senderNumber);
-        
+
         if (deudor) {
-          let plantilla = db.getConfig('mensaje_respuesta') || 
+          let plantilla = db.getConfig('mensaje_respuesta') ||
             'Hola {nombre}, tu deuda actual es de ${deuda}.';
-          
+
           const mensaje = formatMensaje(plantilla, deudor);
           await msg.reply(mensaje);
           db.logMensaje(deudor.id, 'auto-respuesta', mensaje, 'enviado');
@@ -117,6 +115,73 @@ function initWhatsApp() {
       }
     } catch (err) {
       console.error('Error procesando mensaje:', err);
+    }
+  });
+
+  // Escuchar comandos del admin
+  whatsappClient.on('message_create', async (msg) => {
+    try {
+      if (!msg.fromMe || !msg.body.trim().startsWith('/')) return;
+
+      const cmd = msg.body.trim().substring(1).trim();
+      const targetId = msg.to; // El chat donde se envío el mensaje
+      const adminChatId = db.getConfig('admin_chat_id');
+
+      // Comando especial para cambiar de qué chat espera comandos
+      if (cmd.toLowerCase() === 'vincular') {
+        db.setConfig('admin_chat_id', targetId);
+        await msg.reply('✅ Este chat ha sido vinculado como el panel de control del bot. Los comandos como /lista ahora solo se escucharán aquí.');
+        return;
+      }
+
+      // Si aún no hay nada configurado, funciona por defecto en tu chat propio ("Tú")
+      if (!adminChatId && targetId !== msg.from) {
+        return;
+      }
+
+      // Si ya estableciste un grupo vinculado, ignorar comandos de otros lugares
+      if (adminChatId && targetId !== adminChatId) {
+        return;
+      }
+
+      // Hacemos una llamada local a nuestra propia API
+      const res = await fetch(`http://localhost:${PORT}/api/chat/command`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command: cmd })
+      }).then(r => r.json());
+
+      if (res && res.response) {
+        // Limpiar el HTML para que se vea bien en WhatsApp
+        let textoLimpio = res.response
+          // Saltos de bloque
+          .replace(/<\/div>/gi, '\n')
+          .replace(/<\/p>/gi, '\n\n')
+          .replace(/<br\s*\/?>/gi, '\n')
+          // Tablas
+          .replace(/<\/th>\s*<th[^>]*>/gi, ' | ')
+          .replace(/<\/td>\s*<td[^>]*>/gi, ' | ')
+          .replace(/<\/tr>/gi, '\n')
+          // Formato WhatsApp
+          .replace(/<strong[^>]*>(.*?)<\/strong>/gi, '*$1*')
+          .replace(/<b[^>]*>(.*?)<\/b>/gi, '*$1*')
+          .replace(/<em[^>]*>(.*?)<\/em>/gi, '_$1_')
+          .replace(/<i[^>]*>(.*?)<\/i>/gi, '_$1_')
+          .replace(/<code[^>]*>(.*?)<\/code>/gi, '`$1`')
+          .replace(/<[^>]+>/g, '') // Quitar otras etiquetas HTML
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&quot;/g, '"')
+          // Quitar espacios extra/sangrías a los inicios de línea
+          .replace(/^[ \t]+/gm, '')
+          // Limpiar múltiples saltos de línea sobrantes
+          .replace(/\n{3,}/g, '\n\n');
+
+        await msg.reply(textoLimpio.trim());
+      }
+    } catch (err) {
+      console.error('Error en admin command via WA:', err);
     }
   });
 
@@ -136,18 +201,18 @@ async function sendWhatsAppMessage(telefono, mensaje) {
   if (whatsappStatus !== 'ready' || !whatsappClient) {
     throw new Error('WhatsApp no está conectado');
   }
-  
+
   let cleanPhone = telefono.replace(/\D/g, '');
-  
+
   // Validate phone number
   if (cleanPhone.length < 10 || cleanPhone === '0000000000') {
     throw new Error('Número de teléfono no válido');
   }
-  
+
   // Build possible chat IDs for Mexican numbers
   // Mexico numbers can be registered as 52XXXXXXXXXX or 521XXXXXXXXXX on WhatsApp
   const candidates = [];
-  
+
   if (cleanPhone.length === 10) {
     // Raw 10-digit number: try both 52+number and 521+number
     candidates.push('52' + cleanPhone + '@c.us');
@@ -164,34 +229,35 @@ async function sendWhatsAppMessage(telefono, mensaje) {
     // Other country or format: use as-is
     candidates.push(cleanPhone + '@c.us');
   }
-  
+
   try {
     // Try each candidate to find one registered on WhatsApp
     let validChatId = null;
-    
+
     for (const chatId of candidates) {
       try {
-        const isRegistered = await whatsappClient.isRegisteredUser(chatId);
-        if (isRegistered) {
-          validChatId = chatId;
+        const phone = chatId.replace('@c.us', '');
+        const numberId = await whatsappClient.getNumberId(phone);
+        if (numberId) {
+          validChatId = numberId._serialized;
           break;
         }
       } catch (e) {
         // Try next candidate
-        console.log(`  ↳ ${chatId} falló, probando siguiente formato...`);
+        console.log(`  ↳ ${chatId} falló en getNumberId, probando siguiente formato...`);
       }
     }
-    
+
     if (!validChatId) {
       throw new Error(`${telefono} no tiene WhatsApp`);
     }
-    
+
     await whatsappClient.sendMessage(validChatId, mensaje);
     console.log(`  ✅ Mensaje enviado a ${validChatId}`);
     return { success: true };
   } catch (err) {
     console.error(`Error enviando mensaje a ${telefono}:`, err.message);
-    
+
     // Translate common errors to user-friendly messages
     const errMsg = err.message || String(err);
     if (errMsg.includes('no tiene WhatsApp')) {
@@ -206,7 +272,7 @@ async function sendWhatsAppMessage(telefono, mensaje) {
     if (errMsg.includes('rate-limit') || errMsg.includes('too many')) {
       throw new Error('Demasiados mensajes. Espera un momento');
     }
-    
+
     throw new Error(`No se pudo enviar a ${telefono}`);
   }
 }
@@ -214,25 +280,25 @@ async function sendWhatsAppMessage(telefono, mensaje) {
 // ===== CRON JOB for automatic reminders =====
 function setupCron() {
   if (cronJob) cronJob.stop();
-  
+
   const activo = db.getConfig('cron_activo') === '1';
   if (!activo) {
     console.log('⏰ Recordatorios automáticos desactivados.');
     return;
   }
-  
+
   const horario = db.getConfig('cron_horario') || '09:00';
   const dias = (db.getConfig('cron_dias') || 'lunes,miercoles,viernes').split(',');
   const [hour, minute] = horario.split(':');
-  
+
   const daysMap = {
     'domingo': 0, 'lunes': 1, 'martes': 2, 'miercoles': 3, 'miércoles': 3,
     'jueves': 4, 'viernes': 5, 'sabado': 6, 'sábado': 6
   };
-  
+
   const cronDays = dias.map(d => daysMap[d.trim().toLowerCase()]).filter(d => d !== undefined).join(',');
   if (!cronDays) return;
-  
+
   const cronExpression = `${minute} ${hour} * * ${cronDays}`;
   cronJob = cron.schedule(cronExpression, async () => {
     console.log('⏰ Ejecutando recordatorios automáticos...');
@@ -243,12 +309,12 @@ function setupCron() {
 
 async function sendBulkReminders() {
   const deudores = db.getAllDeudores().filter(d => d.deuda_total > 0);
-  const plantilla = db.getConfig('mensaje_recordatorio') || 
+  const plantilla = db.getConfig('mensaje_recordatorio') ||
     'Hola {nombre}, tienes una deuda pendiente de ${deuda}.';
-  
+
   let enviados = 0;
   let errores = 0;
-  
+
   for (const deudor of deudores) {
     try {
       const mensaje = formatMensaje(plantilla, deudor);
@@ -261,7 +327,7 @@ async function sendBulkReminders() {
       errores++;
     }
   }
-  
+
   console.log(`📊 Recordatorios: ${enviados} enviados, ${errores} errores`);
   return { enviados, errores };
 }
@@ -274,7 +340,6 @@ app.post('/api/chat/command', async (req, res) => {
     if (!command || !command.trim()) {
       return res.json({ response: 'Escribe un comando. Escribe <strong>ayuda</strong> para ver los comandos disponibles.', type: 'info' });
     }
-
     const input = command.trim();
     const inputLower = input.toLowerCase();
 
@@ -282,11 +347,11 @@ app.post('/api/chat/command', async (req, res) => {
     if (inputLower === 'ayuda' || inputLower === 'help' || inputLower === '?') {
       return res.json({
         type: 'help',
-        response: `<p><strong>📖 Comandos disponibles:</strong></p>
+        response: `<p>🤖 <strong>¡Hola! Soy Deudbot.</strong></p>
+        <p><strong>📖 Comandos disponibles:</strong></p>
         <div class="chat-help-commands">
-          <div class="help-cmd"><code>nombre - monto</code> → Poner la deuda en ese monto (ej: <code>mau - 40</code>)</div>
-          <div class="help-cmd"><code>nombre +monto</code> → Sumar a la deuda (ej: <code>mau +15</code>)</div>
-          <div class="help-cmd"><code>nombre pago monto</code> → Registrar un pago (ej: <code>mau pago 20</code>)</div>
+          <div class="help-cmd"><code>nombre + monto</code> → Registrar compras/sumar (ej: <code>mau + 15</code>)</div>
+          <div class="help-cmd"><code>nombre - monto</code> → Registrar un pago (ej: <code>mau - 20</code>)</div>
           <div class="help-cmd"><code>nuevo nombre telefono</code> → Agregar deudor (ej: <code>nuevo Juan 5512345678</code>)</div>
           <div class="help-cmd"><code>nuevo nombre telefono monto</code> → Agregar con deuda (ej: <code>nuevo Juan 5512345678 50</code>)</div>
           <div class="help-cmd"><code>borrar nombre</code> → Eliminar un deudor</div>
@@ -337,7 +402,7 @@ app.post('/api/chat/command', async (req, res) => {
       const nombre = nuevoMatch[1].trim();
       const telefono = nuevoMatch[2];
       const deuda = parseFloat(nuevoMatch[3]) || 0;
-      
+
       try {
         const result = db.addDeudor(nombre, telefono, deuda);
         let msgHtml = `<p>✅ <strong>${nombre}</strong> agregado correctamente</p>
@@ -401,7 +466,7 @@ app.post('/api/chat/command', async (req, res) => {
     const notMatch = input.match(/^(?:notificar|enviar|notify|send|recordar)\s+(.+)$/i);
     if (notMatch) {
       const target = notMatch[1].trim().toLowerCase();
-      
+
       if (target === 'todos' || target === 'all') {
         try {
           const result = await sendBulkReminders();
@@ -410,12 +475,12 @@ app.post('/api/chat/command', async (req, res) => {
           return res.json({ type: 'error', response: `❌ Error enviando: ${err.message}` });
         }
       }
-      
+
       const deudor = findDeudorByName(target);
       if (!deudor) {
         return res.json({ type: 'error', response: `❌ No encontré a "<strong>${escHtml(target)}</strong>".` });
       }
-      
+
       try {
         const plantilla = db.getConfig('mensaje_recordatorio') || 'Hola {nombre}, tienes una deuda pendiente de ${deuda}.';
         const mensaje = formatMensaje(plantilla, deudor);
@@ -441,25 +506,24 @@ app.post('/api/chat/command', async (req, res) => {
       }
     }
 
-    // ===== PAGO: "nombre pago monto" =====
-    const pagoMatch = input.match(/^(.+?)\s+(?:pago|paga|abono|abona|pagó|payed)\s+(\d+(?:\.\d+)?)$/i);
+    // ===== PAGO: "nombre - monto" =====
+    const pagoMatch = input.match(/^(.+?)\s*[-–]\s*(\d+(?:\.\d+)?)$/);
     if (pagoMatch) {
       const nombre = pagoMatch[1].trim();
       const monto = parseFloat(pagoMatch[2]);
       const deudor = findDeudorByName(nombre);
-      
+
       if (!deudor) {
         return res.json({ type: 'error', response: `❌ No encontré a "<strong>${escHtml(nombre)}</strong>". Usa <code>nuevo ${escHtml(nombre)} telefono</code> para registrarlo.` });
       }
-      
-      db.addPago(deudor.id, monto, `Pago desde chat`);
+
+      db.addPago(deudor.id, monto, `Pago registrado`);
       const updated = db.getDeudorById(deudor.id);
-      
+
       // Auto-send WhatsApp notification
       let waStatus = '';
       try {
-        const plantilla = db.getConfig('mensaje_recordatorio') || 'Hola {nombre}, tu deuda actual es de ${deuda}.';
-        const mensaje = formatMensaje(plantilla, updated);
+        const mensaje = `Hola ${updated.nombre}, hemos recibido tu pago de $${monto.toFixed(2)}. Tu saldo pendiente actual es de $${updated.deuda_total.toFixed(2)}.`;
         await sendWhatsAppMessage(updated.telefono, mensaje);
         db.logMensaje(updated.id, 'actualización', mensaje, 'enviado');
         waStatus = '<div class="deuda-wa-status sent">✅ Notificado por WhatsApp</div>';
@@ -479,77 +543,24 @@ app.post('/api/chat/command', async (req, res) => {
       });
     }
 
-    // ===== SET DEBT: "nombre - monto" (set to exact amount) =====
-    const setDebtMatch = input.match(/^(.+?)\s*[-–]\s*(\d+(?:\.\d+)?)$/);
-    if (setDebtMatch) {
-      const nombre = setDebtMatch[1].trim();
-      const newDebt = parseFloat(setDebtMatch[2]);
-      const deudor = findDeudorByName(nombre);
-      
-      if (!deudor) {
-        return res.json({ type: 'error', response: `❌ No encontré a "<strong>${escHtml(nombre)}</strong>". Usa <code>nuevo ${escHtml(nombre)} telefono</code> para registrarlo primero.` });
-      }
-
-      const oldDebt = deudor.deuda_total;
-      
-      // Update the debt directly
-      db.updateDeudor(deudor.id, deudor.nombre, deudor.telefono, newDebt, deudor.notas);
-      
-      // Log the change as a payment record (without modifying deuda_total again)
-      if (newDebt !== oldDebt) {
-        const tipo = newDebt > oldDebt ? 'cargo' : 'pago';
-        const monto = Math.abs(newDebt - oldDebt);
-        const pg = db.db.prepare('INSERT INTO pagos (deudor_id, monto, concepto, tipo) VALUES (?, ?, ?, ?)');
-        pg.run(deudor.id, monto, `Actualización: $${oldDebt.toFixed(2)} → $${newDebt.toFixed(2)}`, tipo);
-      }
-
-
-      const updated = db.getDeudorById(deudor.id);
-      const changeIcon = newDebt > oldDebt ? '📈' : newDebt < oldDebt ? '📉' : '➡️';
-      
-      // Auto-send WhatsApp notification
-      let waStatus = '';
-      try {
-        const plantilla = db.getConfig('mensaje_recordatorio') || 'Hola {nombre}, tu deuda actual es de ${deuda}.';
-        const mensaje = formatMensaje(plantilla, updated);
-        await sendWhatsAppMessage(updated.telefono, mensaje);
-        db.logMensaje(updated.id, 'actualización', mensaje, 'enviado');
-        waStatus = '<div class="deuda-wa-status sent">✅ Notificado por WhatsApp</div>';
-      } catch (err) {
-        waStatus = `<div class="deuda-wa-status error">⚠️ WhatsApp: ${err.message}</div>`;
-      }
-
-      return res.json({
-        type: 'success',
-        response: `<p>${changeIcon} Deuda de <strong>${updated.nombre}</strong> actualizada: $${oldDebt.toFixed(2)} → <strong>$${newDebt.toFixed(2)}</strong></p>
-          <div class="chat-deuda-card">
-            <div class="deuda-name">${updated.nombre}</div>
-            <div class="deuda-amount-big ${updated.deuda_total === 0 ? 'paid' : ''}">$${updated.deuda_total.toFixed(2)}</div>
-            <div class="deuda-phone">📱 ${updated.telefono}</div>
-            ${waStatus}
-          </div>`
-      });
-    }
-
-    // ===== ADD TO DEBT: "nombre +monto" =====
+    // ===== ADD TO DEBT: "nombre + monto" =====
     const addDebtMatch = input.match(/^(.+?)\s*\+\s*(\d+(?:\.\d+)?)$/);
     if (addDebtMatch) {
       const nombre = addDebtMatch[1].trim();
       const amount = parseFloat(addDebtMatch[2]);
       const deudor = findDeudorByName(nombre);
-      
+
       if (!deudor) {
         return res.json({ type: 'error', response: `❌ No encontré a "<strong>${escHtml(nombre)}</strong>".` });
       }
-      
-      db.addCargo(deudor.id, amount, `Cargo desde chat`);
+
+      db.addCargo(deudor.id, amount, `Compras desde chat`);
       const updated = db.getDeudorById(deudor.id);
-      
+
       // Auto-send WhatsApp notification
       let waStatus = '';
       try {
-        const plantilla = db.getConfig('mensaje_recordatorio') || 'Hola {nombre}, tu deuda actual es de ${deuda}.';
-        const mensaje = formatMensaje(plantilla, updated);
+        const mensaje = `Hola ${updated.nombre}, se han cargado $${amount.toFixed(2)} por tus nuevas compras. Tu saldo pendiente actual es de $${updated.deuda_total.toFixed(2)}.`;
         await sendWhatsAppMessage(updated.telefono, mensaje);
         db.logMensaje(updated.id, 'actualización', mensaje, 'enviado');
         waStatus = '<div class="deuda-wa-status sent">✅ Notificado por WhatsApp</div>';
@@ -559,7 +570,7 @@ app.post('/api/chat/command', async (req, res) => {
 
       return res.json({
         type: 'success',
-        response: `<p>📈 Se sumó <strong>$${amount.toFixed(2)}</strong> a la deuda de <strong>${updated.nombre}</strong></p>
+        response: `<p>🛒 Se cargaron <strong>$${amount.toFixed(2)}</strong> a la cuenta de <strong>${updated.nombre}</strong></p>
           <div class="chat-deuda-card">
             <div class="deuda-name">${updated.nombre}</div>
             <div class="deuda-amount-big">$${updated.deuda_total.toFixed(2)}</div>
@@ -585,19 +596,19 @@ app.post('/api/chat/command', async (req, res) => {
 function findDeudorByName(nameQuery) {
   const deudores = db.getAllDeudores();
   const query = nameQuery.toLowerCase().trim();
-  
+
   // Exact match first
   let found = deudores.find(d => d.nombre.toLowerCase() === query);
   if (found) return found;
-  
+
   // Starts with
   found = deudores.find(d => d.nombre.toLowerCase().startsWith(query));
   if (found) return found;
-  
+
   // Contains
   found = deudores.find(d => d.nombre.toLowerCase().includes(query));
   if (found) return found;
-  
+
   return null;
 }
 
