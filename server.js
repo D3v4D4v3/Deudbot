@@ -100,10 +100,31 @@ function initWhatsApp() {
       const deudor = db.getDeudorByTelefono(senderNumber);
 
       if (deudor) {
-        let plantilla = db.getConfig('mensaje_respuesta') ||
-          'Hola {nombre}, tu deuda actual es de ${deuda}.';
+        // Build message with balance info
+        let mensaje = `📋 *Consulta de cuenta*\n\n`;
+        mensaje += `👤 *${deudor.nombre}*\n`;
+        
+        if (deudor.deuda_total > 0) {
+          mensaje += `💰 Deuda pendiente: *$${deudor.deuda_total.toFixed(2)}*\n`;
+        } else if (deudor.deuda_total === 0) {
+          mensaje += `✅ No tienes deuda pendiente.\n`;
+        } else {
+          mensaje += `🎉 Saldo a favor: *$${Math.abs(deudor.deuda_total).toFixed(2)}*\n`;
+        }
 
-        const mensaje = formatMensaje(plantilla, deudor);
+        // Add transaction history
+        const pagos = db.getPagosByDeudor(deudor.id);
+        if (pagos.length > 0) {
+          mensaje += `\n📝 *Últimos movimientos:*\n`;
+          for (const p of pagos.slice(0, 5)) {
+            const icon = p.tipo === 'pago' ? '💵' : '🛒';
+            const signo = p.tipo === 'pago' ? '-' : '+';
+            mensaje += `${icon} ${signo}$${p.monto.toFixed(2)} — ${p.concepto || p.tipo} (${p.fecha})\n`;
+          }
+        }
+
+        mensaje += `\n_Responde /consultar en cualquier momento para ver tu estado._`;
+        
         await msg.reply(mensaje);
         db.logMensaje(deudor.id, 'auto-respuesta', mensaje, 'enviado');
         console.log(`🤖 Auto-respuesta enviada a ${deudor.nombre}`);
@@ -396,8 +417,9 @@ app.post('/api/chat/command', async (req, res) => {
       }
       let tableHtml = '<p><strong>📋 Lista de Deudores:</strong></p><table class="chat-list-table"><thead><tr><th>Nombre</th><th>Deuda</th><th>Teléfono</th></tr></thead><tbody>';
       for (const d of deudores) {
-        const amountClass = d.deuda_total === 0 ? 'style="color: #22c55e;"' : 'style="color: #ef4444; font-weight:700;"';
-        tableHtml += `<tr><td>${d.nombre}</td><td ${amountClass}>$${d.deuda_total.toFixed(2)}</td><td style="color:#64748b;">${d.telefono}</td></tr>`;
+        const amountStyle = d.deuda_total === 0 ? 'style="color: #22c55e;"' : d.deuda_total > 0 ? 'style="color: #22c55e; font-weight:700;"' : 'style="color: #ef4444; font-weight:700;"';
+        const prefix = d.deuda_total > 0 ? '+' : '';
+        tableHtml += `<tr><td>${d.nombre}</td><td ${amountStyle}>${prefix}$${d.deuda_total.toFixed(2)}</td><td style="color:#64748b;">${d.telefono}</td></tr>`;
       }
       tableHtml += '</tbody></table>';
       const total = deudores.reduce((s, d) => s + d.deuda_total, 0);

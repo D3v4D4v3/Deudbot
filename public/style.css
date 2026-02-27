@@ -116,10 +116,7 @@ body {
 .logo-text {
   font-size: 1.4rem;
   font-weight: 800;
-  background: var(--gradient-primary);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  color: #ffffff;
   letter-spacing: -0.5px;
 }
 
@@ -441,6 +438,10 @@ body {
   font-size: 1rem;
 }
 
+.top-deudor-amount.positive {
+  color: var(--accent-success);
+}
+
 /* ===== Activity List ===== */
 .activity-list {
   display: flex;
@@ -565,6 +566,10 @@ body {
 }
 
 .deuda-amount.paid {
+  color: var(--accent-success);
+}
+
+.deuda-amount.positive {
   color: var(--accent-success);
 }
 

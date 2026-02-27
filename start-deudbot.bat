@@ -5,6 +5,11 @@ echo   Iniciando DeudBot...
 echo ==========================================
 echo.
 
+:: Limpiar procesos anteriores
+taskkill /F /IM node.exe >nul 2>&1
+echo Procesos anteriores limpiados.
+echo.
+
 cd /d "c:\Users\David\.gemini\antigravity\scratch\chatbot-deudas"
 
 :: Verificar que node_modules existe
