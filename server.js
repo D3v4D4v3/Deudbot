@@ -417,9 +417,8 @@ app.post('/api/chat/command', async (req, res) => {
       }
       let tableHtml = '<p><strong>📋 Lista de Deudores:</strong></p><table class="chat-list-table"><thead><tr><th>Nombre</th><th>Deuda</th><th>Teléfono</th></tr></thead><tbody>';
       for (const d of deudores) {
-        const amountStyle = d.deuda_total === 0 ? 'style="color: #22c55e;"' : d.deuda_total > 0 ? 'style="color: #22c55e; font-weight:700;"' : 'style="color: #ef4444; font-weight:700;"';
-        const prefix = d.deuda_total > 0 ? '+' : '';
-        tableHtml += `<tr><td>${d.nombre}</td><td ${amountStyle}>${prefix}$${d.deuda_total.toFixed(2)}</td><td style="color:#64748b;">${d.telefono}</td></tr>`;
+        const amountStyle = d.deuda_total <= 0 ? 'style="color: #22c55e; font-weight:700;"' : 'style="color: #ef4444; font-weight:700;"';
+        tableHtml += `<tr><td>${d.nombre}</td><td ${amountStyle}>$${d.deuda_total.toFixed(2)}</td><td style="color:#64748b;">${d.telefono}</td></tr>`;
       }
       tableHtml += '</tbody></table>';
       const total = deudores.reduce((s, d) => s + d.deuda_total, 0);

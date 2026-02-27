@@ -174,7 +174,7 @@ async function loadDashboard() {
             <span class="top-deudor-name">${escapeHtml(d.nombre)}</span>
             <span class="top-deudor-phone">${d.telefono}</span>
           </div>
-          <span class="top-deudor-amount ${d.deuda_total > 0 ? 'positive' : ''}">$${d.deuda_total.toFixed(2)}</span>
+          <span class="top-deudor-amount">$${d.deuda_total.toFixed(2)}</span>
         </div>
       `).join('');
     }
@@ -221,7 +221,7 @@ function renderDeudores(list) {
     <tr>
       <td><strong>${escapeHtml(d.nombre)}</strong></td>
       <td>${d.telefono}</td>
-      <td><span class="deuda-amount ${d.deuda_total === 0 ? 'paid' : d.deuda_total > 0 ? 'positive' : ''}">${d.deuda_total > 0 ? '+' : ''}$${d.deuda_total.toFixed(2)}</span></td>
+      <td><span class="deuda-amount ${d.deuda_total <= 0 ? 'paid' : ''}">$${d.deuda_total.toFixed(2)}</span></td>
       <td style="color: var(--text-muted); font-size: 0.85rem;">${escapeHtml(d.notas || '-')}</td>
       <td>
         <div class="table-actions">

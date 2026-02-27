@@ -438,10 +438,6 @@ body {
   font-size: 1rem;
 }
 
-.top-deudor-amount.positive {
-  color: var(--accent-success);
-}
-
 /* ===== Activity List ===== */
 .activity-list {
   display: flex;
@@ -566,10 +562,6 @@ body {
 }
 
 .deuda-amount.paid {
-  color: var(--accent-success);
-}
-
-.deuda-amount.positive {
   color: var(--accent-success);
 }
 
