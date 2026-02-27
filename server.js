@@ -65,6 +65,7 @@ function initWhatsApp() {
     whatsappStatus = 'ready';
     currentQR = null;
     clientInfo = whatsappClient.info;
+    initWhatsApp._retryCount = 0; // Reset retry counter on success
     setupCron();
   });
 
@@ -85,33 +86,30 @@ function initWhatsApp() {
     clientInfo = null;
   });
 
-  // Auto-respond to incoming messages
+  // Auto-respond to incoming messages — only on /consultar command
   whatsappClient.on('message', async (msg) => {
     try {
       if (msg.fromMe) return;
 
       const senderNumber = msg.from.replace('@c.us', '');
-      const messageBody = msg.body.toLowerCase().trim();
+      const messageBody = msg.body.trim();
 
-      const keywords = ['deuda', 'debo'];
+      // Only respond to /consultar command
+      if (messageBody.toLowerCase() !== '/consultar') return;
 
-      const isAskingDebt = keywords.some(kw => messageBody.includes(kw));
+      const deudor = db.getDeudorByTelefono(senderNumber);
 
-      if (isAskingDebt) {
-        const deudor = db.getDeudorByTelefono(senderNumber);
+      if (deudor) {
+        let plantilla = db.getConfig('mensaje_respuesta') ||
+          'Hola {nombre}, tu deuda actual es de ${deuda}.';
 
-        if (deudor) {
-          let plantilla = db.getConfig('mensaje_respuesta') ||
-            'Hola {nombre}, tu deuda actual es de ${deuda}.';
-
-          const mensaje = formatMensaje(plantilla, deudor);
-          await msg.reply(mensaje);
-          db.logMensaje(deudor.id, 'auto-respuesta', mensaje, 'enviado');
-          console.log(`🤖 Auto-respuesta enviada a ${deudor.nombre}`);
-        } else {
-          await msg.reply('Hola, no encontré tu número registrado en el sistema. Contacta al administrador para más información.');
-          db.logMensaje(null, 'auto-respuesta', `Número no registrado: ${senderNumber}`, 'info');
-        }
+        const mensaje = formatMensaje(plantilla, deudor);
+        await msg.reply(mensaje);
+        db.logMensaje(deudor.id, 'auto-respuesta', mensaje, 'enviado');
+        console.log(`🤖 Auto-respuesta enviada a ${deudor.nombre}`);
+      } else {
+        await msg.reply('Hola, no encontré tu número registrado en el sistema. Contacta al administrador para más información.');
+        db.logMensaje(null, 'auto-respuesta', `Número no registrado: ${senderNumber}`, 'info');
       }
     } catch (err) {
       console.error('Error procesando mensaje:', err);
@@ -186,7 +184,26 @@ function initWhatsApp() {
   });
 
   console.log('🔄 Iniciando conexión con WhatsApp...');
-  whatsappClient.initialize();
+  whatsappClient.initialize().catch(err => {
+    console.error('❌ Error al inicializar WhatsApp:', err.message);
+    whatsappStatus = 'disconnected';
+    whatsappClient = null;
+
+    // Auto-retry connection
+    if (!initWhatsApp._retryCount) initWhatsApp._retryCount = 0;
+    initWhatsApp._retryCount++;
+
+    if (initWhatsApp._retryCount <= 10) {
+      const waitSecs = 30;
+      console.log(`🔁 Reintentando en ${waitSecs}s... (intento ${initWhatsApp._retryCount}/10)`);
+      setTimeout(() => {
+        initWhatsApp();
+      }, waitSecs * 1000);
+    } else {
+      console.log('⚠️ Se agotaron los reintentos. Conecta WhatsApp manualmente desde http://localhost:3000');
+      initWhatsApp._retryCount = 0;
+    }
+  });
 }
 
 function formatMensaje(plantilla, deudor) {
@@ -230,6 +247,9 @@ async function sendWhatsAppMessage(telefono, mensaje) {
     candidates.push(cleanPhone + '@c.us');
   }
 
+  console.log(`📞 Intentando enviar a ${telefono} (limpio: ${cleanPhone})`);
+  console.log(`  ↳ Candidatos: ${candidates.join(', ')}`);
+
   try {
     // Try each candidate to find one registered on WhatsApp
     let validChatId = null;
@@ -237,14 +257,18 @@ async function sendWhatsAppMessage(telefono, mensaje) {
     for (const chatId of candidates) {
       try {
         const phone = chatId.replace('@c.us', '');
+        console.log(`  ↳ Probando: ${phone}...`);
         const numberId = await whatsappClient.getNumberId(phone);
         if (numberId) {
           validChatId = numberId._serialized;
+          console.log(`  ✅ Encontrado: ${validChatId}`);
           break;
+        } else {
+          console.log(`  ↳ ${phone} no registrado en WhatsApp`);
         }
       } catch (e) {
         // Try next candidate
-        console.log(`  ↳ ${chatId} falló en getNumberId, probando siguiente formato...`);
+        console.log(`  ↳ ${chatId} falló en getNumberId: ${e.message}`);
       }
     }
 
@@ -273,7 +297,7 @@ async function sendWhatsAppMessage(telefono, mensaje) {
       throw new Error('Demasiados mensajes. Espera un momento');
     }
 
-    throw new Error(`No se pudo enviar a ${telefono}`);
+    throw new Error(`No se pudo enviar a ${telefono} (${errMsg})`);
   }
 }
 
@@ -397,26 +421,66 @@ app.post('/api/chat/command', async (req, res) => {
     }
 
     // ===== NUEVO =====
-    const nuevoMatch = input.match(/^(?:nuevo|new|agregar|add)\s+(.+?)\s+(\d{10,15})(?:\s+(\d+(?:\.\d+)?))?$/i);
-    if (nuevoMatch) {
-      const nombre = nuevoMatch[1].trim();
-      const telefono = nuevoMatch[2];
-      const deuda = parseFloat(nuevoMatch[3]) || 0;
-
-      try {
-        const result = db.addDeudor(nombre, telefono, deuda);
-        let msgHtml = `<p>✅ <strong>${nombre}</strong> agregado correctamente</p>
-          <div class="chat-deuda-card">
-            <div class="deuda-name">${nombre}</div>
-            <div class="deuda-amount-big ${deuda === 0 ? 'paid' : ''}">$${deuda.toFixed(2)}</div>
-            <div class="deuda-phone">📱 ${telefono}</div>
-          </div>`;
-        return res.json({ type: 'success', response: msgHtml });
-      } catch (err) {
-        if (err.message.includes('UNIQUE')) {
-          return res.json({ type: 'error', response: `❌ El teléfono <strong>${telefono}</strong> ya está registrado.` });
+    const nuevoRegex = /^(?:nuevo|new|agregar|add)\s+(.+)$/i;
+    const nuevoRawMatch = input.match(nuevoRegex);
+    if (nuevoRawMatch) {
+      const restOfInput = nuevoRawMatch[1].trim();
+      
+      // Split into parts: try to find name, phone (with possible spaces), and optional amount
+      // Strategy: extract all digit groups from the end, reconstruct phone number
+      const parts = restOfInput.split(/\s+/);
+      
+      // Find where the digits start (name is the non-digit prefix)
+      let nameEnd = -1;
+      for (let i = 0; i < parts.length; i++) {
+        if (/^\d/.test(parts[i])) {
+          nameEnd = i;
+          break;
         }
-        throw err;
+      }
+      
+      if (nameEnd > 0) {
+        const nombre = parts.slice(0, nameEnd).join(' ').trim();
+        const digitParts = parts.slice(nameEnd);
+        
+        // Join all digit parts and strip non-digits
+        const allDigits = digitParts.join('').replace(/\D/g, '');
+        
+        let telefono = '';
+        let deuda = 0;
+        
+        if (allDigits.length >= 10 && allDigits.length <= 15) {
+          // All digits form the phone number, no debt amount
+          telefono = allDigits;
+        } else if (allDigits.length > 15) {
+          // Try: last digit group is the amount, rest is the phone
+          const lastPart = digitParts[digitParts.length - 1].replace(/\D/g, '');
+          const phoneParts = digitParts.slice(0, -1);
+          const phoneDigits = phoneParts.join('').replace(/\D/g, '');
+          
+          if (phoneDigits.length >= 10 && phoneDigits.length <= 15) {
+            telefono = phoneDigits;
+            deuda = parseFloat(lastPart) || 0;
+          }
+        }
+        
+        if (telefono) {
+          try {
+            const result = db.addDeudor(nombre, telefono, deuda);
+            let msgHtml = `<p>✅ <strong>${nombre}</strong> agregado correctamente</p>
+              <div class="chat-deuda-card">
+                <div class="deuda-name">${nombre}</div>
+                <div class="deuda-amount-big ${deuda === 0 ? 'paid' : ''}">$${deuda.toFixed(2)}</div>
+                <div class="deuda-phone">📱 ${telefono}</div>
+              </div>`;
+            return res.json({ type: 'success', response: msgHtml });
+          } catch (err) {
+            if (err.message.includes('UNIQUE')) {
+              return res.json({ type: 'error', response: `❌ El teléfono <strong>${telefono}</strong> ya está registrado.` });
+            }
+            throw err;
+          }
+        }
       }
     }
 
@@ -523,7 +587,14 @@ app.post('/api/chat/command', async (req, res) => {
       // Auto-send WhatsApp notification
       let waStatus = '';
       try {
-        const mensaje = `Hola ${updated.nombre}, hemos recibido tu pago de $${monto.toFixed(2)}. Tu saldo pendiente actual es de $${updated.deuda_total.toFixed(2)}.`;
+        let mensaje = `Hola ${updated.nombre}, hemos recibido tu pago de $${monto.toFixed(2)}. `;
+        if (updated.deuda_total > 0) {
+          mensaje += `Tu saldo pendiente actual es de $${updated.deuda_total.toFixed(2)}.`;
+        } else if (updated.deuda_total === 0) {
+          mensaje += `¡Tu deuda ha quedado saldada! Gracias por tu pago. 🎉`;
+        } else {
+          mensaje += `Tienes un saldo a favor de $${Math.abs(updated.deuda_total).toFixed(2)}. 🎉`;
+        }
         await sendWhatsAppMessage(updated.telefono, mensaje);
         db.logMensaje(updated.id, 'actualización', mensaje, 'enviado');
         waStatus = '<div class="deuda-wa-status sent">✅ Notificado por WhatsApp</div>';
@@ -531,12 +602,16 @@ app.post('/api/chat/command', async (req, res) => {
         waStatus = `<div class="deuda-wa-status error">⚠️ WhatsApp: ${err.message}</div>`;
       }
 
+      const saldoLabel = updated.deuda_total < 0 
+        ? `<div class="deuda-amount-big paid">Saldo a favor: $${Math.abs(updated.deuda_total).toFixed(2)} 🎉</div>`
+        : `<div class="deuda-amount-big ${updated.deuda_total === 0 ? 'paid' : ''}">$${updated.deuda_total.toFixed(2)}</div>`;
+
       return res.json({
         type: 'success',
         response: `<p>💵 Pago de <strong>$${monto.toFixed(2)}</strong> registrado para <strong>${updated.nombre}</strong></p>
           <div class="chat-deuda-card">
             <div class="deuda-name">${updated.nombre}</div>
-            <div class="deuda-amount-big ${updated.deuda_total === 0 ? 'paid' : ''}">$${updated.deuda_total.toFixed(2)}</div>
+            ${saldoLabel}
             <div class="deuda-phone">📱 ${updated.telefono}</div>
             ${waStatus}
           </div>`
@@ -780,5 +855,6 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
   console.log(`\n🚀 Servidor iniciado en http://localhost:${PORT}`);
   console.log('💬 Chat disponible en el navegador');
-  console.log('📱 Conecta WhatsApp desde la sección WhatsApp\n');
+  console.log('📱 Conectando WhatsApp automáticamente...\n');
+  initWhatsApp();
 });

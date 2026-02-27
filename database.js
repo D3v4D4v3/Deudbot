@@ -119,7 +119,7 @@ const addPago = (deudor_id, monto, concepto = '') => {
   // Update deuda_total
   const deudor = getDeudorById(deudor_id);
   if (deudor) {
-    const nuevaDeuda = Math.max(0, deudor.deuda_total - monto);
+    const nuevaDeuda = deudor.deuda_total - monto;
     db.prepare("UPDATE deudores SET deuda_total = ?, fecha_actualizacion = datetime('now', 'localtime') WHERE id = ?").run(nuevaDeuda, deudor_id);
   }
   
