@@ -16,7 +16,7 @@ let whatsappClient = null;
 let whatsappStatus = 'disconnected'; // disconnected, qr, connecting, ready
 let currentQR = null;
 let clientInfo = null;
-let cronJob = null;
+let cronJobs = [];
 
 // Find Chrome executable on Windows
 function findChromePath() {
@@ -103,7 +103,7 @@ function initWhatsApp() {
         // Build message with balance info
         let mensaje = `📋 *Consulta de cuenta*\n\n`;
         mensaje += `👤 *${deudor.nombre}*\n`;
-        
+
         if (deudor.deuda_total > 0) {
           mensaje += `💰 Deuda pendiente: *$${deudor.deuda_total.toFixed(2)}*\n`;
         } else if (deudor.deuda_total === 0) {
@@ -124,7 +124,7 @@ function initWhatsApp() {
         }
 
         mensaje += `\n_Responde /consultar en cualquier momento para ver tu estado._`;
-        
+
         await msg.reply(mensaje);
         db.logMensaje(deudor.id, 'auto-respuesta', mensaje, 'enviado');
         console.log(`🤖 Auto-respuesta enviada a ${deudor.nombre}`);
@@ -324,7 +324,8 @@ async function sendWhatsAppMessage(telefono, mensaje) {
 
 // ===== CRON JOB for automatic reminders =====
 function setupCron() {
-  if (cronJob) cronJob.stop();
+  if (cronJobs) cronJobs.forEach(job => job.stop());
+  cronJobs = [];
 
   const activo = db.getConfig('cron_activo') === '1';
   if (!activo) {
@@ -332,24 +333,33 @@ function setupCron() {
     return;
   }
 
-  const horario = db.getConfig('cron_horario') || '09:00';
-  const dias = (db.getConfig('cron_dias') || 'lunes,miercoles,viernes').split(',');
-  const [hour, minute] = horario.split(':');
+  const horariosStr = db.getConfig('cron_horarios') || '{"lunes":"09:00","miercoles":"09:00","viernes":"09:00"}';
+  let horarios = {};
+  try { horarios = JSON.parse(horariosStr); } catch (e) { horarios = {}; }
 
   const daysMap = {
     'domingo': 0, 'lunes': 1, 'martes': 2, 'miercoles': 3, 'miércoles': 3,
     'jueves': 4, 'viernes': 5, 'sabado': 6, 'sábado': 6
   };
 
-  const cronDays = dias.map(d => daysMap[d.trim().toLowerCase()]).filter(d => d !== undefined).join(',');
-  if (!cronDays) return;
+  const activeDays = Object.keys(horarios).filter(dia => horarios[dia]);
+  if (activeDays.length === 0) return;
 
-  const cronExpression = `${minute} ${hour} * * ${cronDays}`;
-  cronJob = cron.schedule(cronExpression, async () => {
-    console.log('⏰ Ejecutando recordatorios automáticos...');
-    await sendBulkReminders();
+  activeDays.forEach(dia => {
+    const hora = horarios[dia];
+    const [hour, minute] = hora.split(':');
+    const dayNum = daysMap[dia.toLowerCase()];
+
+    if (dayNum !== undefined) {
+      const cronExpression = `${minute} ${hour} * * ${dayNum}`;
+      const job = cron.schedule(cronExpression, async () => {
+        console.log(`⏰ Ejecutando recordatorios automáticos de ${dia}...`);
+        await sendBulkReminders();
+      });
+      cronJobs.push(job);
+      console.log(`⏰ Recordatorios programados: ${dia} a las ${hora} (${cronExpression})`);
+    }
   });
-  console.log(`⏰ Recordatorios programados: ${cronExpression}`);
 }
 
 async function sendBulkReminders() {
@@ -446,11 +456,11 @@ app.post('/api/chat/command', async (req, res) => {
     const nuevoRawMatch = input.match(nuevoRegex);
     if (nuevoRawMatch) {
       const restOfInput = nuevoRawMatch[1].trim();
-      
+
       // Split into parts: try to find name, phone (with possible spaces), and optional amount
       // Strategy: extract all digit groups from the end, reconstruct phone number
       const parts = restOfInput.split(/\s+/);
-      
+
       // Find where the digits start (name is the non-digit prefix)
       let nameEnd = -1;
       for (let i = 0; i < parts.length; i++) {
@@ -459,17 +469,17 @@ app.post('/api/chat/command', async (req, res) => {
           break;
         }
       }
-      
+
       if (nameEnd > 0) {
         const nombre = parts.slice(0, nameEnd).join(' ').trim();
         const digitParts = parts.slice(nameEnd);
-        
+
         // Join all digit parts and strip non-digits
         const allDigits = digitParts.join('').replace(/\D/g, '');
-        
+
         let telefono = '';
         let deuda = 0;
-        
+
         if (allDigits.length >= 10 && allDigits.length <= 15) {
           // All digits form the phone number, no debt amount
           telefono = allDigits;
@@ -478,13 +488,13 @@ app.post('/api/chat/command', async (req, res) => {
           const lastPart = digitParts[digitParts.length - 1].replace(/\D/g, '');
           const phoneParts = digitParts.slice(0, -1);
           const phoneDigits = phoneParts.join('').replace(/\D/g, '');
-          
+
           if (phoneDigits.length >= 10 && phoneDigits.length <= 15) {
             telefono = phoneDigits;
             deuda = parseFloat(lastPart) || 0;
           }
         }
-        
+
         if (telefono) {
           try {
             const result = db.addDeudor(nombre, telefono, deuda);
@@ -623,7 +633,7 @@ app.post('/api/chat/command', async (req, res) => {
         waStatus = `<div class="deuda-wa-status error">⚠️ WhatsApp: ${err.message}</div>`;
       }
 
-      const saldoLabel = updated.deuda_total < 0 
+      const saldoLabel = updated.deuda_total < 0
         ? `<div class="deuda-amount-big paid">Saldo a favor: $${Math.abs(updated.deuda_total).toFixed(2)} 🎉</div>`
         : `<div class="deuda-amount-big ${updated.deuda_total === 0 ? 'paid' : ''}">$${updated.deuda_total.toFixed(2)}</div>`;
 
@@ -843,7 +853,11 @@ app.get('/api/mensajes/log', (req, res) => {
 
 // -- Estadísticas --
 app.get('/api/estadisticas', (req, res) => {
-  try { res.json(db.getEstadisticas()); }
+  try {
+    const stats = db.getEstadisticas();
+    stats.ventasPorDia = db.getVentasPorDia();
+    res.json(stats);
+  }
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -854,8 +868,7 @@ app.get('/api/configuracion', (req, res) => {
       mensaje_recordatorio: db.getConfig('mensaje_recordatorio'),
       mensaje_respuesta: db.getConfig('mensaje_respuesta'),
       cron_activo: db.getConfig('cron_activo'),
-      cron_horario: db.getConfig('cron_horario'),
-      cron_dias: db.getConfig('cron_dias')
+      cron_horarios: db.getConfig('cron_horarios') || '{"lunes":"09:00","miercoles":"09:00","viernes":"09:00"}'
     });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });

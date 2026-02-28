@@ -87,14 +87,14 @@ const getDeudorByTelefono = (telefono) => {
 const addDeudor = (nombre, telefono, deuda_total, notas = '') => {
   const stmt = db.prepare('INSERT INTO deudores (nombre, telefono, deuda_total, notas) VALUES (?, ?, ?, ?)');
   const result = stmt.run(nombre, telefono, deuda_total, notas);
-  
+
   // Add initial charge record
   if (deuda_total > 0) {
     db.prepare('INSERT INTO pagos (deudor_id, monto, concepto, tipo) VALUES (?, ?, ?, ?)').run(
       result.lastInsertRowid, deuda_total, 'Deuda inicial', 'cargo'
     );
   }
-  
+
   return result;
 };
 
@@ -115,14 +115,14 @@ const addPago = (deudor_id, monto, concepto = '') => {
   const pago = db.prepare('INSERT INTO pagos (deudor_id, monto, concepto, tipo) VALUES (?, ?, ?, ?)').run(
     deudor_id, monto, concepto, 'pago'
   );
-  
+
   // Update deuda_total
   const deudor = getDeudorById(deudor_id);
   if (deudor) {
     const nuevaDeuda = deudor.deuda_total - monto;
     db.prepare("UPDATE deudores SET deuda_total = ?, fecha_actualizacion = datetime('now', 'localtime') WHERE id = ?").run(nuevaDeuda, deudor_id);
   }
-  
+
   return pago;
 };
 
@@ -130,14 +130,14 @@ const addCargo = (deudor_id, monto, concepto = '') => {
   const cargo = db.prepare('INSERT INTO pagos (deudor_id, monto, concepto, tipo) VALUES (?, ?, ?, ?)').run(
     deudor_id, monto, concepto, 'cargo'
   );
-  
+
   // Update deuda_total
   const deudor = getDeudorById(deudor_id);
   if (deudor) {
     const nuevaDeuda = deudor.deuda_total + monto;
     db.prepare("UPDATE deudores SET deuda_total = ?, fecha_actualizacion = datetime('now', 'localtime') WHERE id = ?").run(nuevaDeuda, deudor_id);
   }
-  
+
   return cargo;
 };
 
@@ -179,7 +179,7 @@ const getEstadisticas = () => {
   const deudoresConDeuda = db.prepare('SELECT COUNT(*) as count FROM deudores WHERE activo = 1 AND deuda_total > 0').get().count;
   const totalPagos = db.prepare("SELECT COALESCE(SUM(monto), 0) as total FROM pagos WHERE tipo = 'pago'").get().total;
   const mensajesHoy = db.prepare("SELECT COUNT(*) as count FROM mensajes_log WHERE fecha >= date('now', 'localtime')").get().count;
-  
+
   return {
     totalDeudores,
     totalDeuda,
@@ -188,6 +188,17 @@ const getEstadisticas = () => {
     totalPagos,
     mensajesHoy
   };
+};
+
+const getVentasPorDia = () => {
+  return db.prepare(`
+    SELECT date(fecha) as fecha, SUM(monto) as total
+    FROM pagos
+    WHERE tipo = 'cargo'
+    GROUP BY date(fecha)
+    ORDER BY date(fecha) DESC
+    LIMIT 7
+  `).all().reverse();
 };
 
 module.exports = {
@@ -205,5 +216,6 @@ module.exports = {
   getMensajesRecientes,
   getConfig,
   setConfig,
-  getEstadisticas
+  getEstadisticas,
+  getVentasPorDia
 };

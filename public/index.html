@@ -9,6 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
     rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <link rel="stylesheet" href="style.css">
 </head>
 
@@ -87,13 +88,16 @@
                 <p>Escribe comandos para gestionar las deudas de tu salón. <strong>📖 Comandos disponibles:</strong></p>
                 <div class="chat-help-commands">
                   <div class="help-cmd"><code>nombre + monto</code> → Registrar compras/sumar (ej:
-                    <code>mau + 15</code>)</div>
+                    <code>mau + 15</code>)
+                  </div>
                   <div class="help-cmd"><code>nombre - monto</code> → Registrar un pago (ej: <code>mau - 20</code>)
                   </div>
                   <div class="help-cmd"><code>nuevo nombre telefono</code> → Agregar deudor (ej:
-                    <code>nuevo Juan 5512345678</code>)</div>
+                    <code>nuevo Juan 5512345678</code>)
+                  </div>
                   <div class="help-cmd"><code>nuevo nombre telefono monto</code> → Agregar con deuda (ej:
-                    <code>nuevo Juan 5512345678 50</code>)</div>
+                    <code>nuevo Juan 5512345678 50</code>)
+                  </div>
                   <div class="help-cmd"><code>borrar nombre</code> → Eliminar un deudor</div>
                   <div class="help-cmd"><code>lista</code> → Ver todos los deudores y sus deudas</div>
                   <div class="help-cmd"><code>info nombre</code> → Ver detalle de un deudor</div>
@@ -176,6 +180,18 @@
             <div class="activity-list" id="activity-list">
               <p class="empty-state">Sin actividad reciente</p>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- New Chart Section -->
+      <div class="dashboard-grid" style="margin-top: 20px;">
+        <div class="card" style="width: 100%;">
+          <div class="card-header">
+            <h2>📈 Ventas P/Día (Últimos 7 días)</h2>
+          </div>
+          <div class="card-body">
+            <canvas id="ventasChart" height="80"></canvas>
           </div>
         </div>
       </div>
@@ -324,19 +340,29 @@
               </label>
             </div>
             <div class="config-row mt-10">
-              <label>Hora de envío:</label>
-              <input type="time" id="config-cron-horario" class="config-input" value="09:00">
-            </div>
-            <div class="config-row mt-10">
-              <label>Días:</label>
-              <div class="days-selector" id="days-selector">
-                <label class="day-check"><input type="checkbox" value="lunes"> Lun</label>
-                <label class="day-check"><input type="checkbox" value="martes"> Mar</label>
-                <label class="day-check"><input type="checkbox" value="miercoles"> Mié</label>
-                <label class="day-check"><input type="checkbox" value="jueves"> Jue</label>
-                <label class="day-check"><input type="checkbox" value="viernes"> Vie</label>
-                <label class="day-check"><input type="checkbox" value="sabado"> Sáb</label>
-                <label class="day-check"><input type="checkbox" value="domingo"> Dom</label>
+              <label>Días y horas de envío:</label>
+              <div class="days-selector" id="days-selector" style="display:flex; flex-direction:column; gap:8px;">
+                <label class="day-check"><input type="checkbox" value="lunes"> Lunes <input type="time"
+                    class="config-input timer-input" data-day="lunes" style="width: auto; margin-left: 10px;"
+                    value="09:00"></label>
+                <label class="day-check"><input type="checkbox" value="martes"> Martes <input type="time"
+                    class="config-input timer-input" data-day="martes" style="width: auto; margin-left: 10px;"
+                    value="09:00"></label>
+                <label class="day-check"><input type="checkbox" value="miercoles"> Miércoles <input type="time"
+                    class="config-input timer-input" data-day="miercoles" style="width: auto; margin-left: 10px;"
+                    value="09:00"></label>
+                <label class="day-check"><input type="checkbox" value="jueves"> Jueves <input type="time"
+                    class="config-input timer-input" data-day="jueves" style="width: auto; margin-left: 10px;"
+                    value="09:00"></label>
+                <label class="day-check"><input type="checkbox" value="viernes"> Viernes <input type="time"
+                    class="config-input timer-input" data-day="viernes" style="width: auto; margin-left: 10px;"
+                    value="09:00"></label>
+                <label class="day-check"><input type="checkbox" value="sabado"> Sábado <input type="time"
+                    class="config-input timer-input" data-day="sabado" style="width: auto; margin-left: 10px;"
+                    value="09:00"></label>
+                <label class="day-check"><input type="checkbox" value="domingo"> Domingo <input type="time"
+                    class="config-input timer-input" data-day="domingo" style="width: auto; margin-left: 10px;"
+                    value="09:00"></label>
               </div>
             </div>
           </div>

@@ -890,13 +890,13 @@ body {
   transition: var(--transition);
 }
 
-.day-check:has(input:checked) {
+.day-check:has(input[type="checkbox"]:checked) {
   background: rgba(99, 102, 241, 0.15);
   border-color: var(--accent-primary);
   color: var(--accent-primary-hover);
 }
 
-.day-check input {
+.day-check input[type="checkbox"] {
   display: none;
 }
 

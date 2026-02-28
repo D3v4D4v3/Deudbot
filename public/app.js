@@ -2,13 +2,14 @@
 let currentSection = 'chat';
 let deudores = [];
 let waStatusInterval = null;
+let ventasChartInstance = null;
 
 // ===== Init =====
 document.addEventListener('DOMContentLoaded', () => {
   setupNavigation();
   startWAStatusPolling();
   loadConfig();
-  
+
   // Focus chat input
   const chatInput = document.getElementById('chat-input');
   if (chatInput) chatInput.focus();
@@ -69,15 +70,15 @@ function handleChatSubmit(event) {
   const input = document.getElementById('chat-input');
   const command = input.value.trim();
   if (!command) return;
-  
+
   // Add user message to chat
   addChatMessage(command, 'user');
   input.value = '';
   input.focus();
-  
+
   // Show typing indicator
   showTypingIndicator();
-  
+
   // Send command to server
   processChatCommand(command);
 }
@@ -86,19 +87,19 @@ function addChatMessage(content, sender, isHtml = false) {
   const messagesDiv = document.getElementById('chat-messages');
   const msgDiv = document.createElement('div');
   msgDiv.className = `chat-msg ${sender}`;
-  
+
   const now = new Date();
   const time = now.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
-  
+
   const bubbleContent = isHtml ? content : escapeHtml(content);
-  
+
   msgDiv.innerHTML = `
     <div class="chat-bubble ${sender}">
       <div class="chat-bubble-content">${bubbleContent}</div>
       <div class="chat-time">${time}</div>
     </div>
   `;
-  
+
   messagesDiv.appendChild(msgDiv);
   scrollChatToBottom();
 }
@@ -132,10 +133,10 @@ async function processChatCommand(command) {
       method: 'POST',
       body: { command }
     });
-    
+
     hideTypingIndicator();
     addChatMessage(data.response, 'bot', true);
-    
+
   } catch (err) {
     hideTypingIndicator();
     addChatMessage(`❌ Error: ${err.message}`, 'bot', true);
@@ -196,6 +197,97 @@ async function loadDashboard() {
         `;
       }).join('');
     }
+
+    if (stats.ventasPorDia && stats.ventasPorDia.length > 0) {
+      const labels = stats.ventasPorDia.map(v => {
+        const d = new Date(v.fecha);
+        return d.toLocaleDateString('es-MX', { weekday: 'short' });
+      });
+      const data = stats.ventasPorDia.map(v => v.total);
+
+      const ctx = document.getElementById('ventasChart').getContext('2d');
+      if (ventasChartInstance) {
+        ventasChartInstance.destroy();
+      }
+
+      const gradient = ctx.createLinearGradient(0, 0, 0, 300);
+      gradient.addColorStop(0, 'rgba(38, 47, 86, 0.4)');
+      gradient.addColorStop(1, 'rgba(38, 47, 86, 0.0)');
+
+      ventasChartInstance = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: 'Ventas por Día',
+            data: data,
+            borderColor: '#262f56',
+            backgroundColor: gradient,
+            borderWidth: 3,
+            fill: true,
+            tension: 0.4,
+            pointRadius: 0,
+            pointHoverRadius: 6,
+            pointHoverBackgroundColor: '#262f56',
+            pointHoverBorderColor: '#fff',
+            pointHoverBorderWidth: 2
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: {
+            mode: 'index',
+            intersect: false,
+          },
+          plugins: {
+            legend: {
+              display: false
+            },
+            tooltip: {
+              backgroundColor: '#1d233c',
+              padding: 12,
+              displayColors: false,
+              cornerRadius: 8,
+              callbacks: {
+                label: function (context) {
+                  return '$ ' + context.parsed.y.toFixed(2);
+                }
+              }
+            }
+          },
+          scales: {
+            x: {
+              grid: {
+                display: false,
+                drawBorder: false
+              },
+              ticks: {
+                color: '#8b92b2'
+              }
+            },
+            y: {
+              beginAtZero: true,
+              grid: {
+                color: '#e5e7eb',
+                drawBorder: false,
+                borderDash: [5, 5]
+              },
+              ticks: {
+                color: '#8b92b2',
+                callback: function (value) {
+                  return value >= 1000 ? (value / 1000) + 'k' : value;
+                },
+                maxTicksLimit: 6
+              },
+              border: {
+                display: false
+              }
+            }
+          }
+        }
+      });
+    }
   } catch (err) {
     console.error('Error loading dashboard:', err);
   }
@@ -237,7 +329,7 @@ function renderDeudores(list) {
 
 function filterDeudores() {
   const query = document.getElementById('search-deudores').value.toLowerCase();
-  const filtered = deudores.filter(d => 
+  const filtered = deudores.filter(d =>
     d.nombre.toLowerCase().includes(query) || d.telefono.includes(query)
   );
   renderDeudores(filtered);
@@ -250,7 +342,7 @@ function openModal(mode, id = null) {
   const form = document.getElementById('deudor-form');
   form.reset();
   document.getElementById('form-deudor-id').value = '';
-  
+
   if (mode === 'edit' && id) {
     const d = deudores.find(d => d.id === id);
     if (d) {
@@ -353,20 +445,20 @@ async function checkWAStatus() {
 
 function updateWAUI(data) {
   const { status, qr, info } = data;
-  
+
   // Update sidebar badge
   const badge = document.getElementById('wa-status-badge');
   badge.className = `nav-badge ${status === 'ready' ? 'connected' : 'disconnected'}`;
-  
+
   // Update sidebar mini status
   const miniStatus = document.getElementById('wa-mini-status');
   const dot = miniStatus.querySelector('.status-dot');
   const label = miniStatus.querySelector('span:last-child');
-  
+
   // Update chat header indicator
   const chatDot = document.getElementById('chat-wa-dot');
   const chatLabel = document.getElementById('chat-wa-label');
-  
+
   switch (status) {
     case 'ready':
       dot.className = 'status-dot connected';
@@ -403,7 +495,7 @@ function updateWASection(status, qr, info) {
   const btnConnect = document.getElementById('btn-wa-connect');
   const btnDisconnect = document.getElementById('btn-wa-disconnect');
   const connectedInfo = document.getElementById('wa-connected-info');
-  
+
   if (!statusIcon) return; // section not in DOM yet
 
   switch (status) {
@@ -520,23 +612,39 @@ async function loadConfig() {
     document.getElementById('config-msg-recordatorio').value = config.mensaje_recordatorio || '';
     document.getElementById('config-msg-respuesta').value = config.mensaje_respuesta || '';
     document.getElementById('config-cron-activo').checked = config.cron_activo === '1';
-    document.getElementById('config-cron-horario').value = config.cron_horario || '09:00';
-    const dias = (config.cron_dias || '').split(',');
+
+    const horariosStr = config.cron_horarios || '{}';
+    let horarios = {};
+    try { horarios = JSON.parse(horariosStr); } catch (e) { }
+
     document.querySelectorAll('#days-selector input[type="checkbox"]').forEach(cb => {
-      cb.checked = dias.includes(cb.value);
+      const day = cb.value;
+      if (horarios[day]) {
+        cb.checked = true;
+        const timeInput = document.querySelector(`input.timer-input[data-day="${day}"]`);
+        if (timeInput) timeInput.value = horarios[day];
+      } else {
+        cb.checked = false;
+      }
     });
   } catch (err) { console.error('Error loading config:', err); }
 }
 
 async function saveConfig() {
-  const dias = [];
-  document.querySelectorAll('#days-selector input[type="checkbox"]:checked').forEach(cb => dias.push(cb.value));
+  const horarios = {};
+  document.querySelectorAll('#days-selector input[type="checkbox"]:checked').forEach(cb => {
+    const day = cb.value;
+    const timeInput = document.querySelector(`input.timer-input[data-day="${day}"]`);
+    if (timeInput && timeInput.value) {
+      horarios[day] = timeInput.value;
+    }
+  });
+
   const config = {
     mensaje_recordatorio: document.getElementById('config-msg-recordatorio').value,
     mensaje_respuesta: document.getElementById('config-msg-respuesta').value,
     cron_activo: document.getElementById('config-cron-activo').checked ? '1' : '0',
-    cron_horario: document.getElementById('config-cron-horario').value,
-    cron_dias: dias.join(',')
+    cron_horarios: JSON.stringify(horarios)
   };
   try {
     await api('/api/configuracion', { method: 'PUT', body: config });
