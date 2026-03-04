@@ -96,9 +96,10 @@ app.post('/api/auth/login', loginLimiter, (req, res) => {
   if (username === ADMIN_USER && password === ADMIN_PASSWORD) {
     const token = generateToken();
     activeSessions.set(token, { user: username, createdAt: Date.now() });
-    // Limpiar sesiones viejas (más de 24h)
+    // Limpiar sesiones viejas (más de 1 semana)
+    const ONE_WEEK = 7 * 24 * 60 * 60 * 1000;
     for (const [t, s] of activeSessions.entries()) {
-      if (Date.now() - s.createdAt > 24 * 60 * 60 * 1000) activeSessions.delete(t);
+      if (Date.now() - s.createdAt > ONE_WEEK) activeSessions.delete(t);
     }
     return res.json({ success: true, token });
   }
@@ -124,8 +125,9 @@ function requireAuth(req, res, next) {
   const token = req.headers.authorization?.replace('Bearer ', '');
   if (token && activeSessions.has(token)) {
     const session = activeSessions.get(token);
-    // Verificar que la sesión no tenga más de 24h
-    if (Date.now() - session.createdAt > 24 * 60 * 60 * 1000) {
+    // Verificar que la sesión no tenga más de 1 semana
+    const ONE_WEEK = 7 * 24 * 60 * 60 * 1000;
+    if (Date.now() - session.createdAt > ONE_WEEK) {
       activeSessions.delete(token);
       return res.status(401).json({ error: 'Sesión expirada. Inicia sesión de nuevo.' });
     }
