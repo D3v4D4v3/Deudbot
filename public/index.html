@@ -5,6 +5,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>DeudBot - Gestor de Deudas con WhatsApp</title>
+  <link rel="icon" type="image/png" href="favicon.png">
   <meta name="description" content="Chatbot de WhatsApp para gestionar y notificar deudas automáticamente">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
@@ -54,6 +55,11 @@
         <span class="status-dot disconnected"></span>
         <span>Desconectado</span>
       </div>
+      <button class="nav-item" onclick="logout()" id="btn-logout"
+        style="color: #f87171; margin-top: 8px; font-size: 0.85rem;">
+        <span class="nav-icon">🚪</span>
+        <span class="nav-label">Cerrar Sesión</span>
+      </button>
     </div>
   </aside>
 

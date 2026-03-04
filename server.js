@@ -1,15 +1,161 @@
+require('dotenv').config();
 const express = require('express');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
 const cron = require('node-cron');
 const path = require('path');
+const helmet = require('helmet');
+const cors = require('cors');
+const rateLimit = require('express-rate-limit');
 const db = require('./database');
 
 const app = express();
-const PORT = 3000;
+app.set('trust proxy', 1);
+const PORT = process.env.PORT || 3000;
+const NODE_ENV = process.env.NODE_ENV || 'development';
+const ADMIN_USER = process.env.ADMIN_USER || 'admin';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin';
 
-app.use(express.json());
+// ===== SECURITY MIDDLEWARE =====
+
+// Helmet: Security headers (CSP, XSS, HSTS, etc.)
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+      fontSrc: ["'self'", "https://fonts.gstatic.com"],
+      imgSrc: ["'self'", "data:", "blob:"],
+      connectSrc: ["'self'"],
+      scriptSrcAttr: ["'unsafe-inline'"],
+      upgradeInsecureRequests: null,
+    }
+  },
+  crossOriginEmbedderPolicy: false,
+}));
+
+// CORS
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || '*').split(',').map(s => s.trim());
+app.use(cors({
+  origin: allowedOrigins.includes('*') ? true : allowedOrigins,
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  credentials: true,
+}));
+
+// Rate limiting — general
+const generalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutos
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiadas solicitudes. Intenta de nuevo en unos minutos.' },
+});
+app.use(generalLimiter);
+
+// Rate limiting — API más estricto
+const apiLimiter = rateLimit({
+  windowMs: 1 * 1000,
+  max: 1000,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiadas solicitudes a la API. Espera un momento.' },
+});
+app.use('/api/', apiLimiter);
+
+// Rate limiting — login más estricto contra brute force
+const loginLimiter = rateLimit({
+  windowMs: 1 * 1000,
+  max: 1000,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Demasiados intentos de login. Espera 15 minutos.' },
+});
+
+// Body parser con límite de tamaño
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: false, limit: '1mb' }));
+
+// Disable x-powered-by
+app.disable('x-powered-by');
+
+// ===== BASIC AUTH MIDDLEWARE =====
+// Sessions en memoria (simple para este caso)
+const activeSessions = new Map();
+
+function generateToken() {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  let token = '';
+  for (let i = 0; i < 64; i++) token += chars.charAt(Math.floor(Math.random() * chars.length));
+  return token;
+}
+
+// Auth endpoint
+app.post('/api/auth/login', loginLimiter, (req, res) => {
+  const { username, password } = req.body;
+  if (username === ADMIN_USER && password === ADMIN_PASSWORD) {
+    const token = generateToken();
+    activeSessions.set(token, { user: username, createdAt: Date.now() });
+    // Limpiar sesiones viejas (más de 24h)
+    for (const [t, s] of activeSessions.entries()) {
+      if (Date.now() - s.createdAt > 24 * 60 * 60 * 1000) activeSessions.delete(t);
+    }
+    return res.json({ success: true, token });
+  }
+  return res.status(401).json({ error: 'Credenciales incorrectas' });
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (token) activeSessions.delete(token);
+  res.json({ success: true });
+});
+
+app.get('/api/auth/check', (req, res) => {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (token && activeSessions.has(token)) {
+    return res.json({ authenticated: true });
+  }
+  return res.status(401).json({ authenticated: false });
+});
+
+// Middleware de autenticación para rutas protegidas
+function requireAuth(req, res, next) {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (token && activeSessions.has(token)) {
+    const session = activeSessions.get(token);
+    // Verificar que la sesión no tenga más de 24h
+    if (Date.now() - session.createdAt > 24 * 60 * 60 * 1000) {
+      activeSessions.delete(token);
+      return res.status(401).json({ error: 'Sesión expirada. Inicia sesión de nuevo.' });
+    }
+    return next();
+  }
+  return res.status(401).json({ error: 'No autorizado. Inicia sesión.' });
+}
+
+// Servir login page (sin auth)
+app.get('/login', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'login.html'));
+});
+
+// Archivos estáticos públicos (CSS, JS, login.html)
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Proteger TODAS las rutas de API (excepto auth)
+app.use('/api', (req, res, next) => {
+  // Permitir rutas de auth sin token
+  if (req.path.startsWith('/auth/')) return next();
+  requireAuth(req, res, next);
+});
+
+// Log de errores en producción (no exponer stack traces)
+if (NODE_ENV === 'production') {
+  app.use((err, req, res, next) => {
+    console.error('Error:', err.message);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  });
+}
 
 // ===== WhatsApp Client Setup =====
 let whatsappClient = null;
@@ -20,10 +166,11 @@ let cronJobs = [];
 
 // Find Chrome executable on Windows
 function findChromePath() {
+  return '/usr/bin/google-chrome';
   const possiblePaths = [
     'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
     'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-    process.env.LOCALAPPDATA + '\\Google\\Chrome\\Application\\chrome.exe',
+    (process.env.LOCALAPPDATA || '') + '\\Google\\Chrome\\Application\\chrome.exe',
     'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
     'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
   ];
@@ -38,7 +185,17 @@ function initWhatsApp() {
   const chromePath = findChromePath();
   const puppeteerConfig = {
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+    protocolTimeout: 120000,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--disable-extensions',
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding'
+    ]
   };
   if (chromePath) {
     puppeteerConfig.executablePath = chromePath;
@@ -140,69 +297,82 @@ function initWhatsApp() {
   // Escuchar comandos del admin
   whatsappClient.on('message_create', async (msg) => {
     try {
-      if (!msg.fromMe || !msg.body.trim().startsWith('/')) return;
+      if (!msg.fromMe) return;
+      // Ignorar las respuestas del bot (evita loop infinito)
+      if (msg.hasQuotedMsg) return;
 
-      const cmd = msg.body.trim().substring(1).trim();
-      const targetId = msg.to; // El chat donde se envío el mensaje
+      const messageBody = msg.body.trim();
+      if (!messageBody) return;
+
+      const targetId = msg.to; // El chat donde se envió el mensaje
       const adminChatId = db.getConfig('admin_chat_id');
+      const isLinkedChat = adminChatId && targetId === adminChatId;
+      const hasSlash = messageBody.startsWith('/');
 
-      // Comando especial para cambiar de qué chat espera comandos
-      if (cmd.toLowerCase() === 'vincular') {
+      // Comando especial /vincular — funciona desde cualquier chat
+      if (hasSlash && messageBody.substring(1).trim().toLowerCase() === 'vincular') {
         db.setConfig('admin_chat_id', targetId);
-        await msg.reply('✅ Este chat ha sido vinculado como el panel de control del bot. Los comandos como /lista ahora solo se escucharán aquí.');
+        await msg.reply('✅ Este chat ha sido vinculado como el panel de control del bot. Ya no necesitas usar / para los comandos aquí.');
         return;
       }
 
-      // Si aún no hay nada configurado, funciona por defecto en tu chat propio ("Tú")
-      if (!adminChatId && targetId !== msg.from) {
-        return;
-      }
+      // Si estamos en el chat vinculado, aceptar con o sin /
+      // Si NO estamos en el chat vinculado, solo aceptar con /
+      if (isLinkedChat) {
+        // En el chat vinculado: aceptar todo como comando
+        const cmd = hasSlash ? messageBody.substring(1).trim() : messageBody;
 
-      // Si ya estableciste un grupo vinculado, ignorar comandos de otros lugares
-      if (adminChatId && targetId !== adminChatId) {
-        return;
-      }
+        const result = await processCommand(cmd);
 
-      // Hacemos una llamada local a nuestra propia API
-      const res = await fetch(`http://localhost:${PORT}/api/chat/command`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command: cmd })
-      }).then(r => r.json());
+        if (result && result.response) {
+          await msg.reply(cleanHtmlForWhatsApp(result.response));
+        }
+      } else if (hasSlash) {
+        // Fuera del chat vinculado: solo responder a comandos con /
+        // Si no hay chat vinculado configurado, solo funciona en el chat propio
+        if (!adminChatId && targetId !== msg.from) return;
 
-      if (res && res.response) {
-        // Limpiar el HTML para que se vea bien en WhatsApp
-        let textoLimpio = res.response
-          // Saltos de bloque
-          .replace(/<\/div>/gi, '\n')
-          .replace(/<\/p>/gi, '\n\n')
-          .replace(/<br\s*\/?>/gi, '\n')
-          // Tablas
-          .replace(/<\/th>\s*<th[^>]*>/gi, ' | ')
-          .replace(/<\/td>\s*<td[^>]*>/gi, ' | ')
-          .replace(/<\/tr>/gi, '\n')
-          // Formato WhatsApp
-          .replace(/<strong[^>]*>(.*?)<\/strong>/gi, '*$1*')
-          .replace(/<b[^>]*>(.*?)<\/b>/gi, '*$1*')
-          .replace(/<em[^>]*>(.*?)<\/em>/gi, '_$1_')
-          .replace(/<i[^>]*>(.*?)<\/i>/gi, '_$1_')
-          .replace(/<code[^>]*>(.*?)<\/code>/gi, '`$1`')
-          .replace(/<[^>]+>/g, '') // Quitar otras etiquetas HTML
-          .replace(/&amp;/g, '&')
-          .replace(/&lt;/g, '<')
-          .replace(/&gt;/g, '>')
-          .replace(/&quot;/g, '"')
-          // Quitar espacios extra/sangrías a los inicios de línea
-          .replace(/^[ \t]+/gm, '')
-          // Limpiar múltiples saltos de línea sobrantes
-          .replace(/\n{3,}/g, '\n\n');
+        const cmd = messageBody.substring(1).trim();
 
-        await msg.reply(textoLimpio.trim());
+        const result = await processCommand(cmd);
+
+        if (result && result.response) {
+          await msg.reply(cleanHtmlForWhatsApp(result.response));
+        }
       }
     } catch (err) {
       console.error('Error en admin command via WA:', err);
     }
   });
+
+  // Helper para limpiar HTML a formato WhatsApp
+  function cleanHtmlForWhatsApp(html) {
+    return html
+      // Saltos de bloque
+      .replace(/<\/div>/gi, '\n')
+      .replace(/<\/p>/gi, '\n\n')
+      .replace(/<br\s*\/?>/gi, '\n')
+      // Tablas
+      .replace(/<\/th>\s*<th[^>]*>/gi, ' | ')
+      .replace(/<\/td>\s*<td[^>]*>/gi, ' | ')
+      .replace(/<\/tr>/gi, '\n')
+      // Formato WhatsApp
+      .replace(/<strong[^>]*>(.*?)<\/strong>/gi, '*$1*')
+      .replace(/<b[^>]*>(.*?)<\/b>/gi, '*$1*')
+      .replace(/<em[^>]*>(.*?)<\/em>/gi, '_$1_')
+      .replace(/<i[^>]*>(.*?)<\/i>/gi, '_$1_')
+      .replace(/<code[^>]*>(.*?)<\/code>/gi, '`$1`')
+      .replace(/<[^>]+>/g, '') // Quitar otras etiquetas HTML
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      // Quitar espacios extra/sangrías a los inicios de línea
+      .replace(/^[ \t]+/gm, '')
+      // Limpiar múltiples saltos de línea sobrantes
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
 
   console.log('🔄 Iniciando conexión con WhatsApp...');
   whatsappClient.initialize().catch(err => {
@@ -387,311 +557,305 @@ async function sendBulkReminders() {
   return { enviados, errores };
 }
 
-// ===== CHAT COMMAND PROCESSOR =====
-// This is the main feature: process chat commands like "mau - 40"
-app.post('/api/chat/command', async (req, res) => {
-  try {
-    const { command } = req.body;
-    if (!command || !command.trim()) {
-      return res.json({ response: 'Escribe un comando. Escribe <strong>ayuda</strong> para ver los comandos disponibles.', type: 'info' });
-    }
-    const input = command.trim();
-    const inputLower = input.toLowerCase();
+// ===== CHAT COMMAND PROCESSOR (standalone function) =====
+// processCommand returns { type, response } — used by both API and WhatsApp
+async function processCommand(command) {
+  if (!command || !command.trim()) {
+    return { response: 'Escribe un comando. Escribe <strong>ayuda</strong> para ver los comandos disponibles.', type: 'info' };
+  }
+  const input = command.trim();
+  const inputLower = input.toLowerCase();
 
-    // ===== AYUDA =====
-    if (inputLower === 'ayuda' || inputLower === 'help' || inputLower === '?') {
-      return res.json({
-        type: 'help',
-        response: `<p>🤖 <strong>¡Hola! Soy Deudbot.</strong></p>
-        <p><strong>📖 Comandos disponibles:</strong></p>
-        <div class="chat-help-commands">
-          <div class="help-cmd"><code>nombre + monto</code> → Registrar compras/sumar (ej: <code>mau + 15</code>)</div>
-          <div class="help-cmd"><code>nombre - monto</code> → Registrar un pago (ej: <code>mau - 20</code>)</div>
-          <div class="help-cmd"><code>nuevo nombre telefono</code> → Agregar deudor (ej: <code>nuevo Juan 5512345678</code>)</div>
-          <div class="help-cmd"><code>nuevo nombre telefono monto</code> → Agregar con deuda (ej: <code>nuevo Juan 5512345678 50</code>)</div>
-          <div class="help-cmd"><code>borrar nombre</code> → Eliminar un deudor</div>
-          <div class="help-cmd"><code>lista</code> → Ver todos los deudores y sus deudas</div>
-          <div class="help-cmd"><code>info nombre</code> → Ver detalle de un deudor</div>
-          <div class="help-cmd"><code>notificar nombre</code> → Enviar recordatorio a un deudor</div>
-          <div class="help-cmd"><code>notificar todos</code> → Enviar recordatorio a todos</div>
-          <div class="help-cmd"><code>total</code> → Ver el total de deuda</div>
+  // ===== AYUDA =====
+  if (inputLower === 'ayuda' || inputLower === 'help' || inputLower === '?') {
+    return {
+      type: 'help',
+      response: `<p>🤖 <strong>¡Hola! Soy Deudbot.</strong></p>
+      <p><strong>📖 Comandos disponibles:</strong></p>
+      <div class="chat-help-commands">
+        <div class="help-cmd"><code>nombre + monto</code> → Registrar compras/sumar (ej: <code>mau + 15</code>)</div>
+        <div class="help-cmd"><code>nombre - monto</code> → Registrar un pago (ej: <code>mau - 20</code>)</div>
+        <div class="help-cmd"><code>nuevo nombre telefono</code> → Agregar deudor (ej: <code>nuevo Juan 5512345678</code>)</div>
+        <div class="help-cmd"><code>nuevo nombre telefono monto</code> → Agregar con deuda (ej: <code>nuevo Juan 5512345678 50</code>)</div>
+        <div class="help-cmd"><code>borrar nombre</code> → Eliminar un deudor</div>
+        <div class="help-cmd"><code>lista</code> → Ver todos los deudores y sus deudas</div>
+        <div class="help-cmd"><code>info nombre</code> → Ver detalle de un deudor</div>
+        <div class="help-cmd"><code>notificar nombre</code> → Enviar recordatorio a un deudor</div>
+        <div class="help-cmd"><code>notificar todos</code> → Enviar recordatorio a todos</div>
+        <div class="help-cmd"><code>total</code> → Ver el total de deuda</div>
+      </div>`
+    };
+  }
+
+  // ===== LISTA =====
+  if (inputLower === 'lista' || inputLower === 'ls' || inputLower === 'ver' || inputLower === 'todos') {
+    const deudores = db.getAllDeudores();
+    if (deudores.length === 0) {
+      return { type: 'info', response: '📋 No hay deudores registrados. Usa <code>nuevo nombre telefono</code> para agregar uno.' };
+    }
+    let tableHtml = '<p><strong>📋 Lista de Deudores:</strong></p><table class="chat-list-table"><thead><tr><th>Nombre</th><th>Deuda</th><th>Teléfono</th></tr></thead><tbody>';
+    for (const d of deudores) {
+      const amountStyle = d.deuda_total <= 0 ? 'style="color: #22c55e; font-weight:700;"' : 'style="color: #ef4444; font-weight:700;"';
+      tableHtml += `<tr><td>${d.nombre}</td><td ${amountStyle}>$${d.deuda_total.toFixed(2)}</td><td style="color:#64748b;">${d.telefono}</td></tr>`;
+    }
+    tableHtml += '</tbody></table>';
+    const total = deudores.reduce((s, d) => s + d.deuda_total, 0);
+    tableHtml += `<p style="margin-top:8px;font-weight:700;">💰 Total: $${total.toFixed(2)}</p>`;
+    return { type: 'list', response: tableHtml };
+  }
+
+  // ===== TOTAL =====
+  if (inputLower === 'total' || inputLower === 'resumen') {
+    const stats = db.getEstadisticas();
+    return {
+      type: 'info',
+      response: `<p><strong>📊 Resumen:</strong></p>
+        <div class="chat-deuda-card">
+          <div>👥 Deudores: <strong>${stats.totalDeudores}</strong></div>
+          <div>⚠️ Con deuda: <strong>${stats.deudoresConDeuda}</strong></div>
+          <div class="deuda-amount-big" style="margin-top:6px;">💰 Total: $${stats.totalDeuda.toFixed(2)}</div>
+          <div style="margin-top:4px;color:#64748b;">💵 Total pagado: $${stats.totalPagos.toFixed(2)}</div>
         </div>`
-      });
-    }
+    };
+  }
 
-    // ===== LISTA =====
-    if (inputLower === 'lista' || inputLower === 'ls' || inputLower === 'ver' || inputLower === 'todos') {
-      const deudores = db.getAllDeudores();
-      if (deudores.length === 0) {
-        return res.json({ type: 'info', response: '📋 No hay deudores registrados. Usa <code>nuevo nombre telefono</code> para agregar uno.' });
+  // ===== NUEVO =====
+  const nuevoRegex = /^(?:nuevo|new|agregar|add)\s+(.+)$/i;
+  const nuevoRawMatch = input.match(nuevoRegex);
+  if (nuevoRawMatch) {
+    const restOfInput = nuevoRawMatch[1].trim();
+    const parts = restOfInput.split(/\s+/);
+
+    let nameEnd = -1;
+    for (let i = 0; i < parts.length; i++) {
+      if (/^\d/.test(parts[i])) {
+        nameEnd = i;
+        break;
       }
-      let tableHtml = '<p><strong>📋 Lista de Deudores:</strong></p><table class="chat-list-table"><thead><tr><th>Nombre</th><th>Deuda</th><th>Teléfono</th></tr></thead><tbody>';
-      for (const d of deudores) {
-        const amountStyle = d.deuda_total <= 0 ? 'style="color: #22c55e; font-weight:700;"' : 'style="color: #ef4444; font-weight:700;"';
-        tableHtml += `<tr><td>${d.nombre}</td><td ${amountStyle}>$${d.deuda_total.toFixed(2)}</td><td style="color:#64748b;">${d.telefono}</td></tr>`;
-      }
-      tableHtml += '</tbody></table>';
-      const total = deudores.reduce((s, d) => s + d.deuda_total, 0);
-      tableHtml += `<p style="margin-top:8px;font-weight:700;">💰 Total: $${total.toFixed(2)}</p>`;
-      return res.json({ type: 'list', response: tableHtml });
     }
 
-    // ===== TOTAL =====
-    if (inputLower === 'total' || inputLower === 'resumen') {
-      const stats = db.getEstadisticas();
-      return res.json({
-        type: 'info',
-        response: `<p><strong>📊 Resumen:</strong></p>
-          <div class="chat-deuda-card">
-            <div>👥 Deudores: <strong>${stats.totalDeudores}</strong></div>
-            <div>⚠️ Con deuda: <strong>${stats.deudoresConDeuda}</strong></div>
-            <div class="deuda-amount-big" style="margin-top:6px;">💰 Total: $${stats.totalDeuda.toFixed(2)}</div>
-            <div style="margin-top:4px;color:#64748b;">💵 Total pagado: $${stats.totalPagos.toFixed(2)}</div>
-          </div>`
-      });
-    }
+    if (nameEnd > 0) {
+      const nombre = parts.slice(0, nameEnd).join(' ').trim();
+      const digitParts = parts.slice(nameEnd);
+      const allDigits = digitParts.join('').replace(/\D/g, '');
 
-    // ===== NUEVO =====
-    const nuevoRegex = /^(?:nuevo|new|agregar|add)\s+(.+)$/i;
-    const nuevoRawMatch = input.match(nuevoRegex);
-    if (nuevoRawMatch) {
-      const restOfInput = nuevoRawMatch[1].trim();
+      let telefono = '';
+      let deuda = 0;
 
-      // Split into parts: try to find name, phone (with possible spaces), and optional amount
-      // Strategy: extract all digit groups from the end, reconstruct phone number
-      const parts = restOfInput.split(/\s+/);
+      if (allDigits.length >= 10 && allDigits.length <= 15) {
+        telefono = allDigits;
+      } else if (allDigits.length > 15) {
+        const lastPart = digitParts[digitParts.length - 1].replace(/\D/g, '');
+        const phoneParts = digitParts.slice(0, -1);
+        const phoneDigits = phoneParts.join('').replace(/\D/g, '');
 
-      // Find where the digits start (name is the non-digit prefix)
-      let nameEnd = -1;
-      for (let i = 0; i < parts.length; i++) {
-        if (/^\d/.test(parts[i])) {
-          nameEnd = i;
-          break;
+        if (phoneDigits.length >= 10 && phoneDigits.length <= 15) {
+          telefono = phoneDigits;
+          deuda = parseFloat(lastPart) || 0;
         }
       }
 
-      if (nameEnd > 0) {
-        const nombre = parts.slice(0, nameEnd).join(' ').trim();
-        const digitParts = parts.slice(nameEnd);
-
-        // Join all digit parts and strip non-digits
-        const allDigits = digitParts.join('').replace(/\D/g, '');
-
-        let telefono = '';
-        let deuda = 0;
-
-        if (allDigits.length >= 10 && allDigits.length <= 15) {
-          // All digits form the phone number, no debt amount
-          telefono = allDigits;
-        } else if (allDigits.length > 15) {
-          // Try: last digit group is the amount, rest is the phone
-          const lastPart = digitParts[digitParts.length - 1].replace(/\D/g, '');
-          const phoneParts = digitParts.slice(0, -1);
-          const phoneDigits = phoneParts.join('').replace(/\D/g, '');
-
-          if (phoneDigits.length >= 10 && phoneDigits.length <= 15) {
-            telefono = phoneDigits;
-            deuda = parseFloat(lastPart) || 0;
+      if (telefono) {
+        try {
+          const result = db.addDeudor(nombre, telefono, deuda);
+          let msgHtml = `<p>✅ <strong>${nombre}</strong> agregado correctamente</p>
+            <div class="chat-deuda-card">
+              <div class="deuda-name">${nombre}</div>
+              <div class="deuda-amount-big ${deuda === 0 ? 'paid' : ''}">$${deuda.toFixed(2)}</div>
+              <div class="deuda-phone">📱 ${telefono}</div>
+            </div>`;
+          return { type: 'success', response: msgHtml };
+        } catch (err) {
+          if (err.message.includes('UNIQUE')) {
+            return { type: 'error', response: `❌ El teléfono <strong>${telefono}</strong> ya está registrado.` };
           }
-        }
-
-        if (telefono) {
-          try {
-            const result = db.addDeudor(nombre, telefono, deuda);
-            let msgHtml = `<p>✅ <strong>${nombre}</strong> agregado correctamente</p>
-              <div class="chat-deuda-card">
-                <div class="deuda-name">${nombre}</div>
-                <div class="deuda-amount-big ${deuda === 0 ? 'paid' : ''}">$${deuda.toFixed(2)}</div>
-                <div class="deuda-phone">📱 ${telefono}</div>
-              </div>`;
-            return res.json({ type: 'success', response: msgHtml });
-          } catch (err) {
-            if (err.message.includes('UNIQUE')) {
-              return res.json({ type: 'error', response: `❌ El teléfono <strong>${telefono}</strong> ya está registrado.` });
-            }
-            throw err;
-          }
+          throw err;
         }
       }
     }
+  }
 
-    // ===== BORRAR =====
-    const borrarMatch = input.match(/^(?:borrar|eliminar|delete|del|remove)\s+(.+)$/i);
-    if (borrarMatch) {
-      const nombre = borrarMatch[1].trim();
-      const deudor = findDeudorByName(nombre);
-      if (!deudor) {
-        return res.json({ type: 'error', response: `❌ No encontré a "<strong>${escHtml(nombre)}</strong>". Escribe <code>lista</code> para ver los nombres.` });
+  // ===== BORRAR =====
+  const borrarMatch = input.match(/^(?:borrar|eliminar|delete|del|remove)\s+(.+)$/i);
+  if (borrarMatch) {
+    const nombre = borrarMatch[1].trim();
+    const deudor = findDeudorByName(nombre);
+    if (!deudor) {
+      return { type: 'error', response: `❌ No encontré a "<strong>${escHtml(nombre)}</strong>". Escribe <code>lista</code> para ver los nombres.` };
+    }
+    db.deleteDeudor(deudor.id);
+    return { type: 'success', response: `🗑️ <strong>${deudor.nombre}</strong> ha sido eliminado.` };
+  }
+
+  // ===== INFO =====
+  const infoMatch = input.match(/^(?:info|ver|detalle|detalles)\s+(.+)$/i);
+  if (infoMatch) {
+    const nombre = infoMatch[1].trim();
+    const deudor = findDeudorByName(nombre);
+    if (!deudor) {
+      return { type: 'error', response: `❌ No encontré a "<strong>${escHtml(nombre)}</strong>".` };
+    }
+    const pagos = db.getPagosByDeudor(deudor.id);
+    let pagosHtml = '';
+    if (pagos.length > 0) {
+      pagosHtml = '<p style="margin-top:10px;font-weight:600;">📝 Historial:</p>';
+      for (const p of pagos.slice(0, 10)) {
+        const icon = p.tipo === 'pago' ? '💵' : '📝';
+        const color = p.tipo === 'pago' ? '#22c55e' : '#ef4444';
+        pagosHtml += `<div style="font-size:0.8rem;padding:4px 0;color:#94a3b8;">${icon} <span style="color:${color};">$${p.monto.toFixed(2)}</span> — ${p.concepto || p.tipo} (${p.fecha})</div>`;
       }
-      db.deleteDeudor(deudor.id);
-      return res.json({ type: 'success', response: `🗑️ <strong>${deudor.nombre}</strong> ha sido eliminado.` });
+    }
+    return {
+      type: 'info',
+      response: `<div class="chat-deuda-card">
+        <div class="deuda-name">${deudor.nombre}</div>
+        <div class="deuda-amount-big ${deudor.deuda_total === 0 ? 'paid' : ''}">$${deudor.deuda_total.toFixed(2)}</div>
+        <div class="deuda-phone">📱 ${deudor.telefono}</div>
+        ${deudor.notas ? `<div style="margin-top:4px;color:#94a3b8;">📌 ${escHtml(deudor.notas)}</div>` : ''}
+        ${pagosHtml}
+      </div>`
+    };
+  }
+
+  // ===== NOTIFICAR =====
+  const notMatch = input.match(/^(?:notificar|enviar|notify|send|recordar)\s+(.+)$/i);
+  if (notMatch) {
+    const target = notMatch[1].trim().toLowerCase();
+
+    if (target === 'todos' || target === 'all') {
+      try {
+        const result = await sendBulkReminders();
+        return { type: 'success', response: `📤 Recordatorios enviados: <strong>${result.enviados}</strong> ✅, Errores: <strong>${result.errores}</strong>` };
+      } catch (err) {
+        return { type: 'error', response: `❌ Error enviando: ${err.message}` };
+      }
     }
 
-    // ===== INFO =====
-    const infoMatch = input.match(/^(?:info|ver|detalle|detalles)\s+(.+)$/i);
-    if (infoMatch) {
-      const nombre = infoMatch[1].trim();
-      const deudor = findDeudorByName(nombre);
-      if (!deudor) {
-        return res.json({ type: 'error', response: `❌ No encontré a "<strong>${escHtml(nombre)}</strong>".` });
-      }
-      const pagos = db.getPagosByDeudor(deudor.id);
-      let pagosHtml = '';
-      if (pagos.length > 0) {
-        pagosHtml = '<p style="margin-top:10px;font-weight:600;">📝 Historial:</p>';
-        for (const p of pagos.slice(0, 10)) {
-          const icon = p.tipo === 'pago' ? '💵' : '📝';
-          const color = p.tipo === 'pago' ? '#22c55e' : '#ef4444';
-          pagosHtml += `<div style="font-size:0.8rem;padding:4px 0;color:#94a3b8;">${icon} <span style="color:${color};">$${p.monto.toFixed(2)}</span> — ${p.concepto || p.tipo} (${p.fecha})</div>`;
-        }
-      }
-      return res.json({
-        type: 'info',
+    const deudor = findDeudorByName(target);
+    if (!deudor) {
+      return { type: 'error', response: `❌ No encontré a "<strong>${escHtml(target)}</strong>".` };
+    }
+
+    try {
+      const plantilla = db.getConfig('mensaje_recordatorio') || 'Hola {nombre}, tienes una deuda pendiente de ${deuda}.';
+      const mensaje = formatMensaje(plantilla, deudor);
+      await sendWhatsAppMessage(deudor.telefono, mensaje);
+      db.logMensaje(deudor.id, 'manual', mensaje, 'enviado');
+      return {
+        type: 'success',
         response: `<div class="chat-deuda-card">
           <div class="deuda-name">${deudor.nombre}</div>
-          <div class="deuda-amount-big ${deudor.deuda_total === 0 ? 'paid' : ''}">$${deudor.deuda_total.toFixed(2)}</div>
-          <div class="deuda-phone">📱 ${deudor.telefono}</div>
-          ${deudor.notas ? `<div style="margin-top:4px;color:#94a3b8;">📌 ${escHtml(deudor.notas)}</div>` : ''}
-          ${pagosHtml}
+          <div class="deuda-amount-big">$${deudor.deuda_total.toFixed(2)}</div>
+          <div class="deuda-wa-status sent">✅ Mensaje enviado por WhatsApp</div>
         </div>`
-      });
+      };
+    } catch (err) {
+      return {
+        type: 'error',
+        response: `<div class="chat-deuda-card">
+          <div class="deuda-name">${deudor.nombre}</div>
+          <div class="deuda-amount-big">$${deudor.deuda_total.toFixed(2)}</div>
+          <div class="deuda-wa-status error">❌ Error: ${err.message}</div>
+        </div>`
+      };
+    }
+  }
+
+  // ===== PAGO: "nombre - monto" =====
+  const pagoMatch = input.match(/^(.+?)\s*[-–]\s*(\d+(?:\.\d+)?)$/);
+  if (pagoMatch) {
+    const nombre = pagoMatch[1].trim();
+    const monto = parseFloat(pagoMatch[2]);
+    const deudor = findDeudorByName(nombre);
+
+    if (!deudor) {
+      return { type: 'error', response: `❌ No encontré a "<strong>${escHtml(nombre)}</strong>". Usa <code>nuevo ${escHtml(nombre)} telefono</code> para registrarlo.` };
     }
 
-    // ===== NOTIFICAR =====
-    const notMatch = input.match(/^(?:notificar|enviar|notify|send|recordar)\s+(.+)$/i);
-    if (notMatch) {
-      const target = notMatch[1].trim().toLowerCase();
+    db.addPago(deudor.id, monto, `Pago registrado`);
+    const updated = db.getDeudorById(deudor.id);
 
-      if (target === 'todos' || target === 'all') {
-        try {
-          const result = await sendBulkReminders();
-          return res.json({ type: 'success', response: `📤 Recordatorios enviados: <strong>${result.enviados}</strong> ✅, Errores: <strong>${result.errores}</strong>` });
-        } catch (err) {
-          return res.json({ type: 'error', response: `❌ Error enviando: ${err.message}` });
-        }
+    let waStatus = '';
+    try {
+      let mensaje = `Hola ${updated.nombre}, hemos recibido tu pago de $${monto.toFixed(2)}. `;
+      if (updated.deuda_total > 0) {
+        mensaje += `Tu saldo pendiente actual es de $${updated.deuda_total.toFixed(2)}.`;
+      } else if (updated.deuda_total === 0) {
+        mensaje += `¡Tu deuda ha quedado saldada! Gracias por tu pago. 🎉`;
+      } else {
+        mensaje += `Tienes un saldo a favor de $${Math.abs(updated.deuda_total).toFixed(2)}. 🎉`;
       }
-
-      const deudor = findDeudorByName(target);
-      if (!deudor) {
-        return res.json({ type: 'error', response: `❌ No encontré a "<strong>${escHtml(target)}</strong>".` });
-      }
-
-      try {
-        const plantilla = db.getConfig('mensaje_recordatorio') || 'Hola {nombre}, tienes una deuda pendiente de ${deuda}.';
-        const mensaje = formatMensaje(plantilla, deudor);
-        await sendWhatsAppMessage(deudor.telefono, mensaje);
-        db.logMensaje(deudor.id, 'manual', mensaje, 'enviado');
-        return res.json({
-          type: 'success',
-          response: `<div class="chat-deuda-card">
-            <div class="deuda-name">${deudor.nombre}</div>
-            <div class="deuda-amount-big">$${deudor.deuda_total.toFixed(2)}</div>
-            <div class="deuda-wa-status sent">✅ Mensaje enviado por WhatsApp</div>
-          </div>`
-        });
-      } catch (err) {
-        return res.json({
-          type: 'error',
-          response: `<div class="chat-deuda-card">
-            <div class="deuda-name">${deudor.nombre}</div>
-            <div class="deuda-amount-big">$${deudor.deuda_total.toFixed(2)}</div>
-            <div class="deuda-wa-status error">❌ Error: ${err.message}</div>
-          </div>`
-        });
-      }
+      await sendWhatsAppMessage(updated.telefono, mensaje);
+      db.logMensaje(updated.id, 'actualización', mensaje, 'enviado');
+      waStatus = '<div class="deuda-wa-status sent">✅ Notificado por WhatsApp</div>';
+    } catch (err) {
+      waStatus = `<div class="deuda-wa-status error">⚠️ WhatsApp: ${err.message}</div>`;
     }
 
-    // ===== PAGO: "nombre - monto" =====
-    const pagoMatch = input.match(/^(.+?)\s*[-–]\s*(\d+(?:\.\d+)?)$/);
-    if (pagoMatch) {
-      const nombre = pagoMatch[1].trim();
-      const monto = parseFloat(pagoMatch[2]);
-      const deudor = findDeudorByName(nombre);
+    const saldoLabel = updated.deuda_total < 0
+      ? `<div class="deuda-amount-big paid">Saldo a favor: $${Math.abs(updated.deuda_total).toFixed(2)} 🎉</div>`
+      : `<div class="deuda-amount-big ${updated.deuda_total === 0 ? 'paid' : ''}">$${updated.deuda_total.toFixed(2)}</div>`;
 
-      if (!deudor) {
-        return res.json({ type: 'error', response: `❌ No encontré a "<strong>${escHtml(nombre)}</strong>". Usa <code>nuevo ${escHtml(nombre)} telefono</code> para registrarlo.` });
-      }
+    return {
+      type: 'success',
+      response: `<p>💵 Pago de <strong>$${monto.toFixed(2)}</strong> registrado para <strong>${updated.nombre}</strong></p>
+        <div class="chat-deuda-card">
+          <div class="deuda-name">${updated.nombre}</div>
+          ${saldoLabel}
+          <div class="deuda-phone">📱 ${updated.telefono}</div>
+          ${waStatus}
+        </div>`
+    };
+  }
 
-      db.addPago(deudor.id, monto, `Pago registrado`);
-      const updated = db.getDeudorById(deudor.id);
+  // ===== ADD TO DEBT: "nombre + monto" =====
+  const addDebtMatch = input.match(/^(.+?)\s*\+\s*(\d+(?:\.\d+)?)$/);
+  if (addDebtMatch) {
+    const nombre = addDebtMatch[1].trim();
+    const amount = parseFloat(addDebtMatch[2]);
+    const deudor = findDeudorByName(nombre);
 
-      // Auto-send WhatsApp notification
-      let waStatus = '';
-      try {
-        let mensaje = `Hola ${updated.nombre}, hemos recibido tu pago de $${monto.toFixed(2)}. `;
-        if (updated.deuda_total > 0) {
-          mensaje += `Tu saldo pendiente actual es de $${updated.deuda_total.toFixed(2)}.`;
-        } else if (updated.deuda_total === 0) {
-          mensaje += `¡Tu deuda ha quedado saldada! Gracias por tu pago. 🎉`;
-        } else {
-          mensaje += `Tienes un saldo a favor de $${Math.abs(updated.deuda_total).toFixed(2)}. 🎉`;
-        }
-        await sendWhatsAppMessage(updated.telefono, mensaje);
-        db.logMensaje(updated.id, 'actualización', mensaje, 'enviado');
-        waStatus = '<div class="deuda-wa-status sent">✅ Notificado por WhatsApp</div>';
-      } catch (err) {
-        waStatus = `<div class="deuda-wa-status error">⚠️ WhatsApp: ${err.message}</div>`;
-      }
-
-      const saldoLabel = updated.deuda_total < 0
-        ? `<div class="deuda-amount-big paid">Saldo a favor: $${Math.abs(updated.deuda_total).toFixed(2)} 🎉</div>`
-        : `<div class="deuda-amount-big ${updated.deuda_total === 0 ? 'paid' : ''}">$${updated.deuda_total.toFixed(2)}</div>`;
-
-      return res.json({
-        type: 'success',
-        response: `<p>💵 Pago de <strong>$${monto.toFixed(2)}</strong> registrado para <strong>${updated.nombre}</strong></p>
-          <div class="chat-deuda-card">
-            <div class="deuda-name">${updated.nombre}</div>
-            ${saldoLabel}
-            <div class="deuda-phone">📱 ${updated.telefono}</div>
-            ${waStatus}
-          </div>`
-      });
+    if (!deudor) {
+      return { type: 'error', response: `❌ No encontré a "<strong>${escHtml(nombre)}</strong>".` };
     }
 
-    // ===== ADD TO DEBT: "nombre + monto" =====
-    const addDebtMatch = input.match(/^(.+?)\s*\+\s*(\d+(?:\.\d+)?)$/);
-    if (addDebtMatch) {
-      const nombre = addDebtMatch[1].trim();
-      const amount = parseFloat(addDebtMatch[2]);
-      const deudor = findDeudorByName(nombre);
+    db.addCargo(deudor.id, amount, `Compras desde chat`);
+    const updated = db.getDeudorById(deudor.id);
 
-      if (!deudor) {
-        return res.json({ type: 'error', response: `❌ No encontré a "<strong>${escHtml(nombre)}</strong>".` });
-      }
-
-      db.addCargo(deudor.id, amount, `Compras desde chat`);
-      const updated = db.getDeudorById(deudor.id);
-
-      // Auto-send WhatsApp notification
-      let waStatus = '';
-      try {
-        const mensaje = `Hola ${updated.nombre}, se han cargado $${amount.toFixed(2)} por tus nuevas compras. Tu saldo pendiente actual es de $${updated.deuda_total.toFixed(2)}.`;
-        await sendWhatsAppMessage(updated.telefono, mensaje);
-        db.logMensaje(updated.id, 'actualización', mensaje, 'enviado');
-        waStatus = '<div class="deuda-wa-status sent">✅ Notificado por WhatsApp</div>';
-      } catch (err) {
-        waStatus = `<div class="deuda-wa-status error">⚠️ WhatsApp: ${err.message}</div>`;
-      }
-
-      return res.json({
-        type: 'success',
-        response: `<p>🛒 Se cargaron <strong>$${amount.toFixed(2)}</strong> a la cuenta de <strong>${updated.nombre}</strong></p>
-          <div class="chat-deuda-card">
-            <div class="deuda-name">${updated.nombre}</div>
-            <div class="deuda-amount-big">$${updated.deuda_total.toFixed(2)}</div>
-            <div class="deuda-phone">📱 ${updated.telefono}</div>
-            ${waStatus}
-          </div>`
-      });
+    let waStatus = '';
+    try {
+      const mensaje = `Hola ${updated.nombre}, se han cargado $${amount.toFixed(2)} por tus nuevas compras. Tu saldo pendiente actual es de $${updated.deuda_total.toFixed(2)}.`;
+      await sendWhatsAppMessage(updated.telefono, mensaje);
+      db.logMensaje(updated.id, 'actualización', mensaje, 'enviado');
+      waStatus = '<div class="deuda-wa-status sent">✅ Notificado por WhatsApp</div>';
+    } catch (err) {
+      waStatus = `<div class="deuda-wa-status error">⚠️ WhatsApp: ${err.message}</div>`;
     }
 
-    // ===== Not recognized =====
-    return res.json({
-      type: 'error',
-      response: `🤔 No entendí "<strong>${escHtml(input)}</strong>". Escribe <strong>ayuda</strong> para ver los comandos disponibles.`
-    });
+    return {
+      type: 'success',
+      response: `<p>🛒 Se cargaron <strong>$${amount.toFixed(2)}</strong> a la cuenta de <strong>${updated.nombre}</strong></p>
+        <div class="chat-deuda-card">
+          <div class="deuda-name">${updated.nombre}</div>
+          <div class="deuda-amount-big">$${updated.deuda_total.toFixed(2)}</div>
+          <div class="deuda-phone">📱 ${updated.telefono}</div>
+          ${waStatus}
+        </div>`
+    };
+  }
 
+  // ===== Not recognized =====
+  return {
+    type: 'error',
+    response: `🤔 No entendí "<strong>${escHtml(input)}</strong>". Escribe <strong>ayuda</strong> para ver los comandos disponibles.`
+  };
+}
+
+// API route that uses processCommand
+app.post('/api/chat/command', async (req, res) => {
+  try {
+    const result = await processCommand(req.body.command);
+    res.json(result);
   } catch (err) {
     console.error('Error processing chat command:', err);
     res.json({ type: 'error', response: `❌ Error: ${err.message}` });
@@ -780,11 +944,21 @@ app.post('/api/deudores', (req, res) => {
   try {
     const { nombre, telefono, deuda_total, notas } = req.body;
     if (!nombre || !telefono) return res.status(400).json({ error: 'Nombre y teléfono son requeridos' });
-    const result = db.addDeudor(nombre, telefono, deuda_total || 0, notas || '');
+    
+    // Validación de entrada
+    const cleanNombre = String(nombre).trim().slice(0, 100);
+    const cleanTelefono = String(telefono).replace(/[^\d+\-\s()]/g, '').trim().slice(0, 20);
+    const cleanDeuda = Math.min(Math.max(parseFloat(deuda_total) || 0, 0), 999999.99);
+    const cleanNotas = String(notas || '').trim().slice(0, 500);
+    
+    if (cleanNombre.length < 2) return res.status(400).json({ error: 'El nombre debe tener al menos 2 caracteres' });
+    if (cleanTelefono.replace(/\D/g, '').length < 10) return res.status(400).json({ error: 'El teléfono debe tener al menos 10 dígitos' });
+    
+    const result = db.addDeudor(cleanNombre, cleanTelefono, cleanDeuda, cleanNotas);
     res.json({ id: result.lastInsertRowid, message: 'Deudor agregado' });
   } catch (err) {
     if (err.message.includes('UNIQUE')) return res.status(400).json({ error: 'Ese número ya está registrado' });
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Error al agregar deudor' });
   }
 });
 
@@ -875,10 +1049,16 @@ app.get('/api/configuracion', (req, res) => {
 
 app.put('/api/configuracion', (req, res) => {
   try {
-    for (const [clave, valor] of Object.entries(req.body)) db.setConfig(clave, valor);
+    // Solo permitir claves de configuración conocidas
+    const allowedKeys = ['mensaje_recordatorio', 'mensaje_respuesta', 'cron_activo', 'cron_horarios'];
+    for (const [clave, valor] of Object.entries(req.body)) {
+      if (allowedKeys.includes(clave)) {
+        db.setConfig(clave, String(valor));
+      }
+    }
     setupCron();
     res.json({ message: 'Configuración actualizada' });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) { res.status(500).json({ error: 'Error guardando configuración' }); }
 });
 
 app.get('/', (req, res) => {
@@ -888,7 +1068,9 @@ app.get('/', (req, res) => {
 // ===== START SERVER =====
 app.listen(PORT, () => {
   console.log(`\n🚀 Servidor iniciado en http://localhost:${PORT}`);
+  console.log(`🔒 Modo: ${NODE_ENV}`);
+  console.log(`👤 Usuario admin: ${ADMIN_USER}`);
   console.log('💬 Chat disponible en el navegador');
-  console.log('📱 Conectando WhatsApp automáticamente...\n');
-  initWhatsApp();
+  console.log('📱 Conecta WhatsApp desde el panel web\n');
 });
+

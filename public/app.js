@@ -4,8 +4,49 @@ let deudores = [];
 let waStatusInterval = null;
 let ventasChartInstance = null;
 
+// ===== Auth =====
+function getAuthToken() {
+  return localStorage.getItem('deudbot_token');
+}
+
+async function checkAuth() {
+  const token = getAuthToken();
+  if (!token) {
+    window.location.href = '/login';
+    return false;
+  }
+  try {
+    const res = await fetch('/api/auth/check', {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!res.ok) {
+      localStorage.removeItem('deudbot_token');
+      window.location.href = '/login';
+      return false;
+    }
+    return true;
+  } catch (e) {
+    return true; // network error, no redirigir
+  }
+}
+
+function logout() {
+  const token = getAuthToken();
+  if (token) {
+    fetch('/api/auth/logout', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` }
+    }).catch(() => {});
+  }
+  localStorage.removeItem('deudbot_token');
+  window.location.href = '/login';
+}
+
 // ===== Init =====
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  const isAuth = await checkAuth();
+  if (!isAuth) return;
+
   setupNavigation();
   startWAStatusPolling();
   loadConfig();
@@ -47,11 +88,26 @@ function switchSection(section) {
 // ===== API Helper =====
 async function api(url, options = {}) {
   try {
+    const token = getAuthToken();
+    const headers = {
+      'Content-Type': 'application/json',
+      ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+      ...(options.headers || {})
+    };
+
     const response = await fetch(url, {
-      headers: { 'Content-Type': 'application/json' },
       ...options,
+      headers,
       body: options.body ? JSON.stringify(options.body) : undefined
     });
+
+    // Si no está autorizado, redirigir al login
+    if (response.status === 401) {
+      localStorage.removeItem('deudbot_token');
+      window.location.href = '/login';
+      throw new Error('Sesión expirada');
+    }
+
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Error desconocido');
     return data;
