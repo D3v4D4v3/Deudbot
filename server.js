@@ -252,9 +252,23 @@ function initWhatsApp() {
 
       const senderNumber = msg.from.replace('@c.us', '');
       const messageBody = msg.body.trim();
+      const bodyLower = messageBody.toLowerCase();
+
+      if (bodyLower === '/cuenta') {
+        const mensajeCuenta = `💳 *Datos de transferencia*\n\n🏦 Banco: *BBVA*\n🔢 Cuenta: *4152 3140 1599 2723*\n\n_Por favor, envía tu comprobante por este medio una vez realizado el pago._`;
+        await msg.reply(mensajeCuenta);
+        
+        const deudorCuenta = db.getDeudorByTelefono(senderNumber);
+        if (deudorCuenta) {
+          db.logMensaje(deudorCuenta.id, 'auto-respuesta', 'Compartió datos de cuenta BBVA', 'enviado');
+        } else {
+          db.logMensaje(null, 'auto-respuesta', `Datos de cuenta BBVA enviados a: ${senderNumber}`, 'info');
+        }
+        return;
+      }
 
       // Only respond to /consultar command
-      if (messageBody.toLowerCase() !== '/consultar') return;
+      if (bodyLower !== '/consultar') return;
 
       const deudor = db.getDeudorByTelefono(senderNumber);
 
