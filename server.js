@@ -577,6 +577,7 @@ async function processCommand(command) {
       <div class="chat-help-commands">
         <div class="help-cmd"><code>nombre + monto</code> → Registrar compras/sumar (ej: <code>mau + 15</code>)</div>
         <div class="help-cmd"><code>nombre - monto</code> → Registrar un pago (ej: <code>mau - 20</code>)</div>
+        <div class="help-cmd"><code>nombre + monto - monto</code> → Múltiples cargos y/o pagos (ej: <code>mau + 15 - 20</code>)</div>
         <div class="help-cmd"><code>nuevo nombre telefono</code> → Agregar deudor (ej: <code>nuevo Juan 5512345678</code>)</div>
         <div class="help-cmd"><code>nuevo nombre telefono monto</code> → Agregar con deuda (ej: <code>nuevo Juan 5512345678 50</code>)</div>
         <div class="help-cmd"><code>borrar nombre</code> → Eliminar un deudor</div>
@@ -763,30 +764,66 @@ async function processCommand(command) {
     }
   }
 
-  // ===== PAGO: "nombre - monto" =====
-  const pagoMatch = input.match(/^(.+?)\s*[-–]\s*(\d+(?:\.\d+)?)$/);
-  if (pagoMatch) {
-    const nombre = pagoMatch[1].trim();
-    const monto = parseFloat(pagoMatch[2]);
+  // ===== OPERACIONES MÚLTIPLES (CARGOS/PAGOS): "nombre + 12 - 20" =====
+  const opMatch = input.match(/^(.+?)\s*([+\-–]\s*\d+(?:\.\d+)?(?:\s*[+\-–]\s*\d+(?:\.\d+)?)*)$/);
+  if (opMatch) {
+    const nombre = opMatch[1].trim();
+    const opsStr = opMatch[2];
+    
     const deudor = findDeudorByName(nombre);
-
     if (!deudor) {
       return { type: 'error', response: `❌ No encontré a "<strong>${escHtml(nombre)}</strong>". Usa <code>nuevo ${escHtml(nombre)} telefono</code> para registrarlo.` };
     }
 
-    db.addPago(deudor.id, monto, `Pago registrado`);
-    const updated = db.getDeudorById(deudor.id);
+    const operations = opsStr.match(/[+\-–]\s*\d+(?:\.\d+)?/g);
+    let totalCargos = 0;
+    let totalPagos = 0;
 
+    for (const op of operations) {
+      const sign = op.trim().charAt(0);
+      const amountStr = op.replace(/[+\-–]/, '').trim();
+      const amount = parseFloat(amountStr);
+      
+      if (sign === '+' && amount > 0) {
+        db.addCargo(deudor.id, amount, 'Compras desde chat');
+        totalCargos += amount;
+      } else if ((sign === '-' || sign === '–') && amount > 0) {
+        db.addPago(deudor.id, amount, 'Pago registrado');
+        totalPagos += amount;
+      }
+    }
+
+    if (totalCargos === 0 && totalPagos === 0) {
+      return { type: 'error', response: '❌ Los montos ingresados deben ser mayores a 0.' };
+    }
+
+    const updated = db.getDeudorById(deudor.id);
     let waStatus = '';
+    
     try {
-      let mensaje = `Hola ${updated.nombre}, hemos recibido tu pago de $${monto.toFixed(2)}. `;
+      let mensajeMsgs = [];
+      if (totalCargos > 0 && totalPagos === 0) {
+        mensajeMsgs.push(`se han cargado $${totalCargos.toFixed(2)} por tus nuevas compras.`);
+      } else if (totalPagos > 0 && totalCargos === 0) {
+        mensajeMsgs.push(`hemos recibido tu pago de $${totalPagos.toFixed(2)}.`);
+      } else {
+        mensajeMsgs.push(`registramos compras por $${totalCargos.toFixed(2)} y un pago de $${totalPagos.toFixed(2)}.`);
+      }
+
+      let mensaje = `Hola ${updated.nombre}, ${mensajeMsgs.join(' ')} `;
+      
       if (updated.deuda_total > 0) {
         mensaje += `Tu saldo pendiente actual es de $${updated.deuda_total.toFixed(2)}.`;
       } else if (updated.deuda_total === 0) {
-        mensaje += `¡Tu deuda ha quedado saldada! Gracias por tu pago. 🎉`;
+        if (totalPagos > 0) {
+          mensaje += `¡Tu deuda ha quedado saldada! Gracias por tu pago. 🎉`;
+        } else {
+          mensaje += `Tu saldo pendiente está saldado.`;
+        }
       } else {
         mensaje += `Tienes un saldo a favor de $${Math.abs(updated.deuda_total).toFixed(2)}. 🎉`;
       }
+      
       await sendWhatsAppMessage(updated.telefono, mensaje);
       db.logMensaje(updated.id, 'actualización', mensaje, 'enviado');
       waStatus = '<div class="deuda-wa-status sent">✅ Notificado por WhatsApp</div>';
@@ -797,49 +834,22 @@ async function processCommand(command) {
     const saldoLabel = updated.deuda_total < 0
       ? `<div class="deuda-amount-big paid">Saldo a favor: $${Math.abs(updated.deuda_total).toFixed(2)} 🎉</div>`
       : `<div class="deuda-amount-big ${updated.deuda_total === 0 ? 'paid' : ''}">$${updated.deuda_total.toFixed(2)}</div>`;
+      
+    let opsDescription = '';
+    if (totalCargos > 0 && totalPagos === 0) {
+      opsDescription = `🛒 Se cargaron <strong>$${totalCargos.toFixed(2)}</strong> a la cuenta de <strong>${updated.nombre}</strong>`;
+    } else if (totalPagos > 0 && totalCargos === 0) {
+      opsDescription = `💵 Pago de <strong>$${totalPagos.toFixed(2)}</strong> registrado para <strong>${updated.nombre}</strong>`;
+    } else {
+      opsDescription = `🛒 Carga de <strong>$${totalCargos.toFixed(2)}</strong> y 💵 Pago de <strong>$${totalPagos.toFixed(2)}</strong> registrados para <strong>${updated.nombre}</strong>`;
+    }
 
     return {
       type: 'success',
-      response: `<p>💵 Pago de <strong>$${monto.toFixed(2)}</strong> registrado para <strong>${updated.nombre}</strong></p>
+      response: `<p>${opsDescription}</p>
         <div class="chat-deuda-card">
           <div class="deuda-name">${updated.nombre}</div>
           ${saldoLabel}
-          <div class="deuda-phone">📱 ${updated.telefono}</div>
-          ${waStatus}
-        </div>`
-    };
-  }
-
-  // ===== ADD TO DEBT: "nombre + monto" =====
-  const addDebtMatch = input.match(/^(.+?)\s*\+\s*(\d+(?:\.\d+)?)$/);
-  if (addDebtMatch) {
-    const nombre = addDebtMatch[1].trim();
-    const amount = parseFloat(addDebtMatch[2]);
-    const deudor = findDeudorByName(nombre);
-
-    if (!deudor) {
-      return { type: 'error', response: `❌ No encontré a "<strong>${escHtml(nombre)}</strong>".` };
-    }
-
-    db.addCargo(deudor.id, amount, `Compras desde chat`);
-    const updated = db.getDeudorById(deudor.id);
-
-    let waStatus = '';
-    try {
-      const mensaje = `Hola ${updated.nombre}, se han cargado $${amount.toFixed(2)} por tus nuevas compras. Tu saldo pendiente actual es de $${updated.deuda_total.toFixed(2)}.`;
-      await sendWhatsAppMessage(updated.telefono, mensaje);
-      db.logMensaje(updated.id, 'actualización', mensaje, 'enviado');
-      waStatus = '<div class="deuda-wa-status sent">✅ Notificado por WhatsApp</div>';
-    } catch (err) {
-      waStatus = `<div class="deuda-wa-status error">⚠️ WhatsApp: ${err.message}</div>`;
-    }
-
-    return {
-      type: 'success',
-      response: `<p>🛒 Se cargaron <strong>$${amount.toFixed(2)}</strong> a la cuenta de <strong>${updated.nombre}</strong></p>
-        <div class="chat-deuda-card">
-          <div class="deuda-name">${updated.nombre}</div>
-          <div class="deuda-amount-big">$${updated.deuda_total.toFixed(2)}</div>
           <div class="deuda-phone">📱 ${updated.telefono}</div>
           ${waStatus}
         </div>`
