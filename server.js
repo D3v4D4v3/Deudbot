@@ -1,4 +1,5 @@
 require('dotenv').config();
+const fs = require('fs');
 const express = require('express');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
@@ -176,7 +177,7 @@ function findChromePath() {
     'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
     'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
   ];
-  const fs = require('fs');
+
   for (const p of possiblePaths) {
     if (p && fs.existsSync(p)) return p;
   }
@@ -184,6 +185,20 @@ function findChromePath() {
 }
 
 function initWhatsApp() {
+  // Limpiar bloqueos de Puppeteer antes de iniciar
+  try {
+    const sessionPath = path.join(__dirname, '.wwebjs_auth', 'session');
+    ['SingletonLock', 'SingletonCookie', 'SingletonSocket'].forEach(file => {
+      const fp = path.join(sessionPath, file);
+      if (fs.existsSync(fp)) {
+        fs.unlinkSync(fp);
+        console.log(`🧹 Bloqueo eliminado: ${file}`);
+      }
+    });
+  } catch (e) {
+    console.error('⚠️ Error limpiando bloqueos:', e.message);
+  }
+
   const chromePath = findChromePath();
   const puppeteerConfig = {
     headless: true,
