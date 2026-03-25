@@ -108,7 +108,15 @@ async function api(url, options = {}) {
       throw new Error('Sesión expirada');
     }
 
-    const data = await response.json();
+    let data;
+    const text = await response.text();
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      console.error('Data no es JSON:', text.slice(0, 100));
+      throw new Error(`Error del servidor (no JSON). Contacta al soporte.`);
+    }
+
     if (!response.ok) throw new Error(data.error || 'Error desconocido');
     return data;
   } catch (err) {

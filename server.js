@@ -188,13 +188,34 @@ function initWhatsApp() {
   // Limpiar bloqueos de Puppeteer antes de iniciar
   try {
     const sessionPath = path.join(__dirname, '.wwebjs_auth', 'session');
-    ['SingletonLock', 'SingletonCookie', 'SingletonSocket'].forEach(file => {
-      const fp = path.join(sessionPath, file);
-      if (fs.existsSync(fp)) {
-        fs.unlinkSync(fp);
-        console.log(`🧹 Bloqueo eliminado: ${file}`);
-      }
-    });
+    
+    // Lista de archivos de bloqueo comunes
+    const lockFiles = [
+      'SingletonLock',
+      'SingletonCookie',
+      'SingletonSocket',
+      'DevToolsActivePort',
+      'Default/LOCK',
+      'Default/SingletonLock',
+      'Default/SingletonCookie',
+      'Default/SingletonSocket',
+      'Default/DevToolsActivePort'
+    ];
+
+    if (fs.existsSync(sessionPath)) {
+      lockFiles.forEach(file => {
+        const fp = path.join(sessionPath, file);
+        try {
+          if (fs.existsSync(fp)) {
+            fs.unlinkSync(fp);
+            console.log(`🧹 Bloqueo eliminado: ${file}`);
+          }
+        } catch (err) {
+          // Si no se puede borrar (tal vez proceso aún activo), ignorar o loguear
+          console.log(`⚠️ No se pudo eliminar ${file}: ${err.message}`);
+        }
+      });
+    }
   } catch (e) {
     console.error('⚠️ Error limpiando bloqueos:', e.message);
   }
@@ -475,27 +496,49 @@ async function sendWhatsAppMessage(telefono, mensaje) {
   try {
     // Try each candidate to find one registered on WhatsApp
     let validChatId = null;
+    let lastError = null;
 
     for (const chatId of candidates) {
-      try {
-        const phone = chatId.replace('@c.us', '');
-        console.log(`  ↳ Probando: ${phone}...`);
-        const numberId = await whatsappClient.getNumberId(phone);
-        if (numberId) {
-          validChatId = numberId._serialized;
-          console.log(`  ✅ Encontrado: ${validChatId}`);
-          break;
-        } else {
-          console.log(`  ↳ ${phone} no registrado en WhatsApp`);
+      // Re-intentos cortos para errores de Puppeteer como "detached Frame"
+      let attempts = 0;
+      const maxAttempts = 2;
+      
+      while (attempts < maxAttempts) {
+        try {
+          const phone = chatId.replace('@c.us', '');
+          console.log(`  ↳ Probando: ${phone} (intento ${attempts + 1})...`);
+          
+          if (!whatsappClient || whatsappStatus !== 'ready') {
+            throw new Error('WhatsApp no está listo');
+          }
+
+          const numberId = await whatsappClient.getNumberId(phone);
+          if (numberId) {
+            validChatId = numberId._serialized;
+            console.log(`  ✅ Encontrado: ${validChatId}`);
+            break;
+          } else {
+            console.log(`  ↳ ${phone} no registrado en WhatsApp`);
+            break; // No seguir reintentando si el número no existe
+          }
+        } catch (e) {
+          attempts++;
+          lastError = e;
+          console.log(`  ⚠️ Intento ${attempts} falló: ${e.message}`);
+          
+          // Si es un error de navegador/frame, esperar un poco antes de reintentar
+          if (e.message.includes('detached Frame') || e.message.includes('Execution context was destroyed')) {
+            await new Promise(r => setTimeout(r, 1000));
+          } else {
+            break; // Otros errores no se reintentan
+          }
         }
-      } catch (e) {
-        // Try next candidate
-        console.log(`  ↳ ${chatId} falló en getNumberId: ${e.message}`);
       }
+      if (validChatId) break;
     }
 
     if (!validChatId) {
-      throw new Error(`${telefono} no tiene WhatsApp`);
+      throw lastError || new Error(`${telefono} no tiene WhatsApp`);
     }
 
     await whatsappClient.sendMessage(validChatId, mensaje);
@@ -899,7 +942,8 @@ app.post('/api/chat/command', async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error('Error processing chat command:', err);
-    res.json({ type: 'error', response: `❌ Error: ${err.message}` });
+    // Asegurar siempre respuesta JSON
+    res.status(200).json({ type: 'error', response: `❌ Error de comando: ${err.message}` });
   }
 });
 
