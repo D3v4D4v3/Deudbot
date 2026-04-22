@@ -166,6 +166,26 @@ let whatsappStatus = 'disconnected'; // disconnected, qr, connecting, ready
 let currentQR = null;
 let clientInfo = null;
 let cronJobs = [];
+const chatIdCache = new Map();
+let isRestarting = false;
+
+async function recoverWhatsApp() {
+  if (isRestarting) return;
+  isRestarting = true;
+  console.log('🔄 Recuperando WhatsApp (reiniciando por error crítico de session/frame)...');
+  try {
+    if (whatsappClient) await whatsappClient.destroy();
+  } catch (e) {
+    console.error('Error cerrando cliente en recuperación:', e.message);
+  }
+  whatsappStatus = 'disconnected';
+  whatsappClient = null;
+  setTimeout(() => {
+    initWhatsApp();
+    isRestarting = false;
+  }, 5000);
+}
+
 
 // Find Chrome executable on Windows
 function findChromePath() {
@@ -377,7 +397,14 @@ function initWhatsApp() {
         const result = await processCommand(cmd);
 
         if (result && result.response) {
-          await msg.reply(cleanHtmlForWhatsApp(result.response));
+          try {
+            await msg.reply(cleanHtmlForWhatsApp(result.response));
+          } catch (replyErr) {
+            console.error('Error en msg.reply (chat propio):', replyErr.message);
+            if (replyErr.message.includes('detached Frame') || replyErr.message.includes('Execution context was destroyed')) {
+               recoverWhatsApp();
+            }
+          }
         }
       } else if (hasSlash) {
         // Fuera del chat vinculado: solo responder a comandos con /
@@ -389,11 +416,21 @@ function initWhatsApp() {
         const result = await processCommand(cmd);
 
         if (result && result.response) {
-          await msg.reply(cleanHtmlForWhatsApp(result.response));
+          try {
+            await msg.reply(cleanHtmlForWhatsApp(result.response));
+          } catch (replyErr) {
+            console.error('Error en msg.reply (comando remotos):', replyErr.message);
+            if (replyErr.message.includes('detached Frame') || replyErr.message.includes('Execution context was destroyed')) {
+               recoverWhatsApp();
+            }
+          }
         }
       }
     } catch (err) {
       console.error('Error en admin command via WA:', err);
+      if (err.message && (err.message.includes('detached Frame') || err.message.includes('Execution context was destroyed'))) {
+        recoverWhatsApp();
+      }
     }
   });
 
@@ -427,6 +464,8 @@ function initWhatsApp() {
   }
 
   console.log('🔄 Iniciando conexión con WhatsApp...');
+  // Limpiar el estado de isRestarting si se llama manualmente
+  isRestarting = false;
   whatsappClient.initialize().catch(err => {
     console.error('❌ Error al inicializar WhatsApp:', err.message);
     whatsappStatus = 'disconnected';
@@ -498,10 +537,17 @@ async function sendWhatsAppMessage(telefono, mensaje) {
     let validChatId = null;
     let lastError = null;
 
+  // Check cache first
+  if (chatIdCache.has(cleanPhone)) {
+    validChatId = chatIdCache.get(cleanPhone);
+    console.log(`  ✅ Usando caché para: ${validChatId}`);
+  }
+
+  if (!validChatId) {
     for (const chatId of candidates) {
       // Re-intentos cortos para errores de Puppeteer como "detached Frame"
       let attempts = 0;
-      const maxAttempts = 2;
+      const maxAttempts = 3; // Aumentar maxAttempts para dar tiempo
       
       while (attempts < maxAttempts) {
         try {
@@ -515,20 +561,22 @@ async function sendWhatsAppMessage(telefono, mensaje) {
           const numberId = await whatsappClient.getNumberId(phone);
           if (numberId) {
             validChatId = numberId._serialized;
+            chatIdCache.set(cleanPhone, validChatId);
             console.log(`  ✅ Encontrado: ${validChatId}`);
             break;
           } else {
             console.log(`  ↳ ${phone} no registrado en WhatsApp`);
-            break; // No seguir reintentando si el número no existe
+            break; // No seguir reintentando si el número no existe de forma legítima
           }
         } catch (e) {
           attempts++;
           lastError = e;
-          console.log(`  ⚠️ Intento ${attempts} falló: ${e.message}`);
+          console.log(`  ⚠️ Intento ${attempts} falló en getNumberId: ${e.message}`);
           
-          // Si es un error de navegador/frame, esperar un poco antes de reintentar
+          // Si es un error de navegador/frame, recuperar WhatsApp
           if (e.message.includes('detached Frame') || e.message.includes('Execution context was destroyed')) {
-            await new Promise(r => setTimeout(r, 1000));
+            recoverWhatsApp();
+            throw new Error('Reiniciando servicio de WhatsApp por pérdida de conexión. Por favor reintenta en unos instantes.');
           } else {
             break; // Otros errores no se reintentan
           }
@@ -538,12 +586,24 @@ async function sendWhatsAppMessage(telefono, mensaje) {
     }
 
     if (!validChatId) {
+      if (lastError && lastError.message.includes('Reiniciando')) {
+         throw lastError; // Propagar el error de reinicio hacia arriba para loguearlo correctamente
+      }
       throw lastError || new Error(`${telefono} no tiene WhatsApp`);
     }
+  }
 
+  try {
     await whatsappClient.sendMessage(validChatId, mensaje);
     console.log(`  ✅ Mensaje enviado a ${validChatId}`);
     return { success: true };
+  } catch (err) {
+    console.error(`Error enviando mensaje final a ${validChatId}:`, err.message);
+    if (err.message && (err.message.includes('detached Frame') || err.message.includes('Execution context was destroyed'))) {
+      recoverWhatsApp();
+    }
+    throw err;
+  }
   } catch (err) {
     console.error(`Error enviando mensaje a ${telefono}:`, err.message);
 
